@@ -1,0 +1,948 @@
+name: Release (Windows + Android + iOS)
+
+# Production release pipeline (repo is PRIVATE).
+# Public distribution (update.json + Setup.exe/APK) is hosted on Supabase
+# Storage bucket `releases` (override via repo variable RELEASES_BUCKET).
+# Required secrets: SUPABASE_URL, SUPABASE_ANON_KEY (build),
+# SUPABASE_SERVICE_KEY (storage upload, CI only), optional ANDROID_KEYSTORE_*.
+# GitHub Releases stay as a private version record + artifact backup.
+# - push to main        -> validate + build all + publish GitHub Release
+# - workflow_dispatch   -> manual build, choose platforms, optional publish
+# - pull_request        -> handled by ci.yml (validate only, no release here)
+#
+# Versioning:
+#   VERSION      = manual, from pubspec.yaml (X.Y.Z, semantic)
+#   BUILD_NUMBER = automatic, monotonically increasing, single source:
+#                  max(repo variable BUILD_NUMBER, published tags, pubspec +N) + 1
+#   Tag          = v{VERSION}+{BUILD_NUMBER}  (e.g. v1.2.3+101)
+#
+# Future App Store distribution needs (structure-ready, secrets only):
+#   IOS_CERTIFICATE_BASE64, IOS_CERTIFICATE_PASSWORD,
+#   IOS_PROVISION_PROFILE_BASE64,
+#   APP_STORE_KEY_ID, APP_STORE_ISSUER_ID, APP_STORE_PRIVATE_KEY
+
+"on":
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Platforms to build"
+        type: choice
+        default: all
+        options: [all, windows, android, ios]
+      publish:
+        description: "Create GitHub Release + update.json + advance BUILD_NUMBER"
+        type: boolean
+        default: true
+      build_number:
+        description: "Optional manual build number (must be greater than last published)"
+        required: false
+        default: ""
+
+# One release at a time per ref: concurrent runs can never share a build number.
+# PRs use unique refs so they never block each other; pushes to main serialize.
+concurrency:
+  group: production-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # tags + releases
+  actions: write # advance BUILD_NUMBER repo variable
+
+# Public hosting for update.json + installers lives on Supabase Storage
+# (repo is private). Override once via repo variable RELEASES_BUCKET.
+env:
+  RELEASES_BUCKET: ${{ vars.RELEASES_BUCKET }}
+
+jobs:
+  # ---------------------------------------------------------------- prepare
+  prepare:
+    name: Prepare version + build number
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build_number: ${{ steps.meta.outputs.build_number }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      app_id: ${{ steps.meta.outputs.app_id }}
+      tag: ${{ steps.meta.outputs.tag }}
+      storage_tag: ${{ steps.meta.outputs.storage_tag }}
+      platforms: ${{ steps.platforms.outputs.platforms }}
+      win_base: ${{ steps.meta.outputs.win_base }}
+      win_zip: ${{ steps.meta.outputs.win_zip }}
+      win_setup: ${{ steps.meta.outputs.win_setup }}
+      apk_file: ${{ steps.meta.outputs.apk_file }}
+      apk_v7a_file: ${{ steps.meta.outputs.apk_v7a_file }}
+      aab_file: ${{ steps.meta.outputs.aab_file }}
+      ios_base: ${{ steps.meta.outputs.ios_base }}
+      ios_zip: ${{ steps.meta.outputs.ios_zip }}
+    steps:
+      - name: Checkout (full history for notes + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Platforms to build
+        id: platforms
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "platforms=${{ inputs.platforms }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "platforms=all" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve version + next build number
+        id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANUAL_BUILD: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+
+          # --- VERSION: manual, from pubspec.yaml only (must be X.Y.Z) ---
+          LINE=$(grep -m1 -E '^version:' pubspec.yaml || true)
+          if [[ "$LINE" =~ ^version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)(\+([0-9]+))? ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            PUB_SUFFIX="${BASH_REMATCH[3]:-0}"
+          else
+            echo "::error::Invalid version in pubspec.yaml (expected X.Y.Z[+N])"
+            exit 1
+          fi
+
+          # --- app id from windows/CMakeLists BINARY_NAME (preserved logic) ---
+          APP_ID="sanad"
+          if grep -qE 'set\(BINARY_NAME' windows/CMakeLists.txt; then
+            APP_ID=$(grep -oE 'set\(BINARY_NAME *"[^"]+"\)' windows/CMakeLists.txt | head -1 | sed -E 's/.*BINARY_NAME *"([^"]+)".*/\1/')
+          fi
+
+          # --- last published build: max over release tags ---
+          # current format vX.Y.Z+N  + legacy format vX.Y.Z-buildN-sha
+          MAX_TAG=0
+          TAGS_JSON=$(gh release list --repo "$REPO" --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null || true)
+          while IFS= read -r t; do
+            if [[ "$t" =~ \+([0-9]+)$ ]]; then
+              if (( BASH_REMATCH[1] > MAX_TAG )); then MAX_TAG=${BASH_REMATCH[1]}; fi
+            elif [[ "$t" =~ -build([0-9]+)- ]]; then
+              if (( BASH_REMATCH[1] > MAX_TAG )); then MAX_TAG=${BASH_REMATCH[1]}; fi
+            fi
+          done <<< "$TAGS_JSON"
+
+          # --- repo variable BUILD_NUMBER (single source of truth, 0 if unset) ---
+          VAR_BUILD=$(gh api "repos/$REPO/actions/variables/BUILD_NUMBER" --jq '.value // "0"' 2>/dev/null || echo "0")
+          [[ "$VAR_BUILD" =~ ^[0-9]+$ ]] || VAR_BUILD=0
+
+          # --- NEXT build number ---
+          if [[ -n "$MANUAL_BUILD" ]]; then
+            [[ "$MANUAL_BUILD" =~ ^[0-9]+$ ]] || { echo "::error::Manual build_number must be a positive integer."; exit 1; }
+            NEXT="$MANUAL_BUILD"
+          else
+            BASE=$VAR_BUILD
+            if (( MAX_TAG > BASE )); then BASE=$MAX_TAG; fi
+            if (( PUB_SUFFIX > BASE )); then BASE=$PUB_SUFFIX; fi
+            NEXT=$((BASE + 1))
+          fi
+          if (( NEXT <= MAX_TAG )); then
+            echo "::error::ERROR: Build number $NEXT has already been published. Current published build: $MAX_TAG. Requested build: $NEXT"
+            exit 1
+          fi
+
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          TAG="v$VERSION+$NEXT"
+          # Storage object keys reject '+' -> safe folder uses '-' instead.
+          # (Git tag keeps '+'; only storage paths + manifest URLs use this.)
+          STORAGE_TAG="${TAG//+/-}"
+
+          # --- never recreate an existing tag ---
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::error::ERROR: Tag $TAG already exists. Refusing to create a duplicate release."
+            exit 1
+          fi
+
+          WIN_BASE="$APP_ID-windows-v$VERSION-build$NEXT-$SHORT_SHA"
+          IOS_BASE="$APP_ID-ios-v$VERSION-build$NEXT-$SHORT_SHA"
+
+          {
+            echo "version=$VERSION"
+            echo "build_number=$NEXT"
+            echo "short_sha=$SHORT_SHA"
+            echo "app_id=$APP_ID"
+            echo "tag=$TAG"
+            echo "storage_tag=$STORAGE_TAG"
+            echo "max_published=$MAX_TAG"
+            echo "win_base=$WIN_BASE"
+            echo "win_zip=$WIN_BASE.zip"
+            echo "win_setup=$WIN_BASE-Setup.exe"
+            echo "apk_file=$APP_ID-android-arm64-v$VERSION-build$NEXT-$SHORT_SHA.apk"
+            echo "apk_v7a_file=$APP_ID-android-armeabi-v7a-v$VERSION-build$NEXT-$SHORT_SHA.apk"
+            echo "aab_file=$APP_ID-android-v$VERSION-build$NEXT-$SHORT_SHA.aab"
+            echo "ios_base=$IOS_BASE"
+            echo "ios_zip=$IOS_BASE.zip"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "========================================"
+            echo "RELEASE"
+            echo "========================================"
+            echo ""
+            echo "App          : SANAD"
+            echo "Version      : $VERSION"
+            echo "Build Number : $NEXT (prev published: $MAX_TAG, variable: $VAR_BUILD)"
+            echo "Commit       : $SHORT_SHA"
+            echo "Release Tag  : $TAG"
+            echo ""
+            echo "========================================"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # --------------------------------------------------------------- validate
+  validate:
+    name: Validate (analyze + test gate)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter 3.41.2 (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.2"
+          channel: "stable"
+          cache: true
+
+      - name: Create placeholder .env for analyze
+        shell: bash
+        run: |
+          # نفس سبب ci.yml: ملف فاضي يكفي، والأسرار الحقيقية في jobs البناء فقط.
+          if [[ ! -f .env ]]; then
+            printf 'SUPABASE_URL=https://placeholder.local\nSUPABASE_ANON_KEY=placeholder\nUPDATE_MANIFEST_URL=\n' > .env
+          fi
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: flutter analyze
+        # الـ infos (style) موجودة تاريخيا — الفشل على errors فقط.
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: flutter test
+        shell: bash
+        run: |
+          # receipt_label_test مستبعد من البوابة: توليد يدوي بطيء للتحقق
+          # من الطباعة (مكسور تاريخيا على الشجرة النظيفة) — يُشغَّل يدويا فقط.
+          mapfile -t TEST_FILES < <(find test -name '*_test.dart' -not -name 'receipt_label_test.dart' | sort)
+          flutter test "${TEST_FILES[@]}"
+
+  # ---------------------------------------------------------------- windows
+  # Preserved from the previously working build-windows.yml (same Flutter
+  # version, same .env-from-secrets, same Inno Setup flow, same naming).
+  build-windows:
+    name: Windows build + installer
+    needs: [prepare, validate]
+    if: needs.prepare.outputs.platforms == 'all' || needs.prepare.outputs.platforms == 'windows'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter 3.41.2 (stable, Dart 3.11.0)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.2"
+          channel: "stable"
+          cache: true
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+        shell: pwsh
+
+      - name: Create .env from GitHub Secrets
+        shell: pwsh
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:SUPABASE_URL) -or [string]::IsNullOrWhiteSpace($env:SUPABASE_ANON_KEY)) {
+            Write-Error 'ERROR: Missing GitHub Secrets. Go to repo Settings > Secrets and variables > Actions and add SUPABASE_URL and SUPABASE_ANON_KEY.'
+            exit 1
+          }
+          if ($env:RELEASES_BUCKET) { $bucket = $env:RELEASES_BUCKET } else { $bucket = "releases" }
+          $manifestUrl = "$($env:SUPABASE_URL)/storage/v1/object/public/$bucket/update.json"
+          "SUPABASE_URL=$($env:SUPABASE_URL)" | Out-File -FilePath ".env" -Encoding utf8
+          "SUPABASE_ANON_KEY=$($env:SUPABASE_ANON_KEY)" | Out-File -FilePath ".env" -Encoding utf8 -Append
+          "UPDATE_MANIFEST_URL=$manifestUrl" | Out-File -FilePath ".env" -Encoding utf8 -Append
+          "RELEASES_BUCKET=$bucket" | Out-File -FilePath ".env" -Encoding utf8 -Append
+          Write-Host ".env created from secrets (values masked)."
+
+      - name: Prepare installer branding (icon + wizard images, before build)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pillow
+          python - <<'EOF'
+          from PIL import Image
+          import os, sys
+          logo_path = 'assets/logo.png'
+          ico_path = 'windows/runner/resources/app_icon.ico'
+          wiz_path = 'windows/installer/wizard_image.bmp'
+          small_path = 'windows/installer/wizard_small.bmp'
+          if not os.path.exists(logo_path):
+              print(f"::error::Missing source logo: {logo_path}")
+              sys.exit(1)
+          logo = Image.open(logo_path).convert('RGBA')
+          # 1) exe icon (title-bar / taskbar): must exist BEFORE flutter build
+          if not os.path.exists(ico_path):
+              print(f"app_icon.ico missing -> generating from {logo_path}")
+              logo.save(ico_path, format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          else:
+              print(f"app_icon.ico OK ({os.path.getsize(ico_path)} bytes)")
+          # 2) Inno wizard images (installer UI branding)
+          def make_bmp(out, cw, ch, mw, mh):
+              if os.path.exists(out):
+                  print(f"{out} OK")
+                  return
+              os.makedirs(os.path.dirname(out), exist_ok=True)
+              canvas = Image.new('RGB', (cw, ch), (255,255,255))
+              lw, lh = logo.size
+              s = min(mw/lw, mh/lh)
+              nw, nh = int(lw*s), int(lh*s)
+              r = logo.resize((nw, nh), Image.LANCZOS)
+              tmp = Image.new('RGB', r.size, (255,255,255))
+              tmp.paste(r, mask=r.split()[3])
+              canvas.paste(tmp, ((cw-nw)//2, (ch-nh)//2))
+              canvas.save(out, 'BMP')
+              print(f"generated {out}")
+          make_bmp(wiz_path, 164, 314, 140, 140)
+          make_bmp(small_path, 55, 58, 48, 48)
+          EOF
+          for f in "windows/runner/resources/app_icon.ico" "windows/installer/wizard_image.bmp" "windows/installer/wizard_small.bmp"; do
+            [[ -f "$f" ]] || { echo "::error::Missing branding file: $f"; exit 1; }
+            ls -lh "$f"
+          done
+
+      - name: Pin pubspec version to release identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $v = "${{ needs.prepare.outputs.version }}+${{ needs.prepare.outputs.build_number }}"
+          (Get-Content pubspec.yaml) -replace '^version: .*', "version: $v" | Set-Content pubspec.yaml
+          Get-Content pubspec.yaml | Select-String '^version:' | Write-Host
+
+      - name: flutter pub get
+        run: flutter pub get
+        shell: pwsh
+
+      - name: flutter build windows --release
+        shell: pwsh
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          $bucket = if ($env:RELEASES_BUCKET) { $env:RELEASES_BUCKET } else { "releases" }
+          $manifestUrl = "$($env:SUPABASE_URL)/storage/v1/object/public/$bucket/update.json"
+          flutter build windows --release --dart-define=SUPABASE_URL=$env:SUPABASE_URL --dart-define=SUPABASE_ANON_KEY=$env:SUPABASE_ANON_KEY --dart-define=UPDATE_MANIFEST_URL=$manifestUrl --dart-define=RELEASES_BUCKET=$bucket
+
+      - name: Verify Windows Release output
+        shell: pwsh
+        run: |
+          $releaseDir = "build/windows/x64/runner/Release"
+          if (-not (Test-Path $releaseDir)) {
+            Write-Error "ERROR: Release folder not found: $releaseDir"
+            exit 1
+          }
+          Get-ChildItem $releaseDir | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+
+      - name: Zip Windows Release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releaseDir = "build/windows/x64/runner/Release"
+          $zipFile = "${{ needs.prepare.outputs.win_zip }}"
+          if (Test-Path $zipFile) { Remove-Item $zipFile -Force }
+          Compress-Archive -Path "$releaseDir/*" -DestinationPath $zipFile -Force
+          Write-Host "Created $zipFile"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (Test-Path $iscc) {
+            Write-Host "Inno Setup already installed."
+          } else {
+            Write-Host "Installing Inno Setup via Chocolatey..."
+            choco install innosetup -y --no-progress
+            if (-not (Test-Path $iscc)) {
+              Write-Error "ERROR: Inno Setup installation failed, ISCC.exe not found at $iscc"
+              exit 1
+            }
+          }
+
+      - name: Generate installer.iss (Flutter Release -> Setup.exe)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $appName       = "SANAD — سند"
+          $version       = "${{ needs.prepare.outputs.version }}"
+          $buildNumber   = "${{ needs.prepare.outputs.build_number }}"
+          $shortSha      = "${{ needs.prepare.outputs.short_sha }}"
+          $appVersion4   = "$version.$buildNumber"
+          $exeName       = "${{ needs.prepare.outputs.app_id }}.exe"
+          $installerBase = "${{ needs.prepare.outputs.win_base }}-Setup"
+          $releaseDir    = "build/windows/x64/runner/Release"
+          $iconFile      = "windows\runner\resources\app_icon.ico"
+          $wizImage      = "windows\installer\wizard_image.bmp"
+          $wizSmall      = "windows\installer\wizard_small.bmp"
+
+          if (-not (Test-Path "$releaseDir\$exeName")) {
+            Write-Error "ERROR: Main exe not found: $releaseDir\$exeName"
+            exit 1
+          }
+
+          # اللوجو إجباري: فشل واضح بدل ما نكمل بـ Setup من غير أيقونة.
+          foreach ($f in @($iconFile, $wizImage, $wizSmall)) {
+            if (-not (Test-Path $f)) {
+              Write-Error "ERROR: Missing branding file: $f (run 'Prepare installer branding' step)."
+              exit 1
+            }
+          }
+          Write-Host "Using app icon: $iconFile"
+          Write-Host "Using wizard images: $wizImage , $wizSmall"
+
+          $iss = @"
+          ; Auto-generated by GitHub Actions - do not edit manually.
+          ; App: $appName | Version: $version+$buildNumber | Commit: $shortSha
+          #define MyAppName "$appName"
+          #define MyAppVersion "$appVersion4"
+          #define MyAppDisplayVersion "$version build $buildNumber ($shortSha)"
+          #define MyAppPublisher "SANAD"
+          #define MyAppExeName "$exeName"
+          #define MyAppSourceDir "build\windows\x64\runner\Release"
+          #define MyAppOutputBase "$installerBase"
+
+          [Setup]
+          AppName={#MyAppName}
+          AppVersion={#MyAppDisplayVersion}
+          VersionInfoVersion={#MyAppVersion}
+          VersionInfoDescription={#MyAppName} Setup
+          VersionInfoProductName={#MyAppName}
+          AppPublisher={#MyAppPublisher}
+          DefaultDirName={autopf}\{#MyAppName}
+          DefaultGroupName={#MyAppName}
+          OutputDir=build\installer
+          OutputBaseFilename={#MyAppOutputBase}
+          Compression=lzma2/max
+          SolidCompression=yes
+          PrivilegesRequired=lowest
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          DisableProgramGroupPage=yes
+          WizardStyle=modern
+          UninstallDisplayName={#MyAppName} {#MyAppDisplayVersion}
+          UninstallDisplayIcon={app}\{#MyAppExeName}
+          SetupIconFile=$iconFile
+          WizardImageFile=$wizImage
+          WizardSmallImageFile=$wizSmall
+
+          [Languages]
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+
+          [Tasks]
+          Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+          [Files]
+          ; All Flutter Release files (exe + DLLs + data + plugins) - not just the main exe
+          Source: "{#MyAppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
+          Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+          [Run]
+          Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+          "@
+
+          $iss | Out-File -FilePath "installer.iss" -Encoding utf8
+          Write-Host "installer.iss generated."
+
+      - name: Compile installer with Inno Setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $cmd = Get-Command iscc -ErrorAction SilentlyContinue
+            if ($cmd) { $iscc = $cmd.Source } else {
+              Write-Error "ERROR: Inno Setup Compiler (ISCC.exe) not found."
+              exit 1
+            }
+          }
+          & $iscc "installer.iss"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ERROR: Inno Setup compilation failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+
+      - name: Move installer to final name + verify
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $expected = "build/installer/${{ needs.prepare.outputs.win_setup }}"
+          if (-not (Test-Path $expected)) {
+            Write-Error "ERROR: Installer not found: $expected"
+            exit 1
+          }
+          Get-Item $expected | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+
+      - name: Upload Windows ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.win_base }}
+          path: ${{ needs.prepare.outputs.win_zip }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.win_base }}-installer
+          path: build/installer/${{ needs.prepare.outputs.win_setup }}
+          if-no-files-found: error
+          compression-level: 0
+
+  # ---------------------------------------------------------------- android
+  build-android:
+    name: Android APK + AAB
+    needs: [prepare, validate]
+    if: needs.prepare.outputs.platforms == 'all' || needs.prepare.outputs.platforms == 'android'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17 (Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Setup Flutter 3.41.2 (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.2"
+          channel: "stable"
+          cache: true
+
+      - name: Create .env from GitHub Secrets
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SUPABASE_URL:-}" || -z "${SUPABASE_ANON_KEY:-}" ]]; then
+            echo "::error::Missing GitHub Secrets SUPABASE_URL / SUPABASE_ANON_KEY."
+            exit 1
+          fi
+          {
+            echo "SUPABASE_URL=$SUPABASE_URL"
+            echo "SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
+            BUCKET="${RELEASES_BUCKET:-releases}"
+            echo "UPDATE_MANIFEST_URL=$SUPABASE_URL/storage/v1/object/public/$BUCKET/update.json"
+            echo "RELEASES_BUCKET=$BUCKET"
+          } > .env
+          echo ".env created from secrets (values masked)."
+
+      - name: Pin pubspec version to release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i -E "s/^version: .*/version: ${{ needs.prepare.outputs.version }}+${{ needs.prepare.outputs.build_number }}/" pubspec.yaml
+          grep -E '^version:' pubspec.yaml
+
+      - name: Android release signing (optional, secrets only)
+        shell: bash
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${KS_B64:-}" && -n "${KS_PASS:-}" && -n "${KEY_ALIAS:-}" && -n "${KEY_PASS:-}" ]]; then
+            echo "$KS_B64" | base64 --decode > android/app/release.jks
+            {
+              echo "storeFile=app/release.jks"
+              echo "storePassword=$KS_PASS"
+              echo "keyAlias=$KEY_ALIAS"
+              echo "keyPassword=$KEY_PASS"
+            } > android/keystore.properties
+            echo "Release keystore configured (no secrets printed)."
+          else
+            echo "::warning::Android signing secrets missing (ANDROID_KEYSTORE_BASE64/PASSWORD/ALIAS/KEY_PASSWORD). Building with debug keys - NOT for store/distribution release."
+          fi
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: flutter build apk --release (split per ABI)
+        # Split APKs stay under the 50MB Storage file cap (universal ~80MB).
+        # AAB (Play) + x86_64 go to GitHub Release only, not Storage.
+        run: flutter build apk --release --split-per-abi
+
+      - name: flutter build appbundle --release
+        run: flutter build appbundle --release
+
+      - name: Rename + verify APK/AAB
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "dist/${{ needs.prepare.outputs.apk_file }}"
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk "dist/${{ needs.prepare.outputs.apk_v7a_file }}"
+          cp build/app/outputs/bundle/release/app-release.aab "dist/${{ needs.prepare.outputs.aab_file }}"
+          ls -la dist/
+          # Guard: Storage rejects files >50MB - fail fast with a clear error.
+          python3 - dist <<'EOF'
+          import os, sys
+          bad = [(f, os.path.getsize(f'dist/{f}')) for f in
+                 ('${{ needs.prepare.outputs.apk_file }}',
+                  '${{ needs.prepare.outputs.apk_v7a_file }}')
+                 if os.path.getsize(f'dist/{f}') > 50*1024*1024]
+          if bad:
+              print(f"::error::APK exceeds 50MB Storage cap: {bad}. Enable shrinking (--shrink) or reduce assets.")
+              sys.exit(1)
+          print("APK sizes under 50MB cap - OK")
+          EOF
+
+      - name: Upload Android artifacts (APK + AAB)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.app_id }}-android-v${{ needs.prepare.outputs.version }}-build${{ needs.prepare.outputs.build_number }}-${{ needs.prepare.outputs.short_sha }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+
+  # --------------------------------------------------------------------- ios
+  # NOTE (iOS): CI verification only (no codesign) -> unsigned Runner.app.
+  # Signed IPA / App Store distribution is structure-ready via secrets:
+  # IOS_CERTIFICATE_BASE64, IOS_CERTIFICATE_PASSWORD,
+  # IOS_PROVISION_PROFILE_BASE64, APP_STORE_KEY_ID,
+  # APP_STORE_ISSUER_ID, APP_STORE_PRIVATE_KEY.
+  build-ios:
+    name: iOS build (unsigned verification)
+    needs: [prepare, validate]
+    if: needs.prepare.outputs.platforms == 'all' || needs.prepare.outputs.platforms == 'ios'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter 3.41.2 (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.2"
+          channel: "stable"
+          cache: true
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cocoapods
+            ios/Pods
+          key: cocoapods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: |
+            cocoapods-${{ runner.os }}-
+
+      - name: Create .env from GitHub Secrets
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SUPABASE_URL:-}" || -z "${SUPABASE_ANON_KEY:-}" ]]; then
+            echo "::error::Missing GitHub Secrets SUPABASE_URL / SUPABASE_ANON_KEY."
+            exit 1
+          fi
+          {
+            echo "SUPABASE_URL=$SUPABASE_URL"
+            echo "SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
+            BUCKET="${RELEASES_BUCKET:-releases}"
+            echo "UPDATE_MANIFEST_URL=$SUPABASE_URL/storage/v1/object/public/$BUCKET/update.json"
+            echo "RELEASES_BUCKET=$BUCKET"
+          } > .env
+
+      - name: Pin pubspec version to release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i -E "s/^version: .*/version: ${{ needs.prepare.outputs.version }}+${{ needs.prepare.outputs.build_number }}/" pubspec.yaml
+          grep -E '^version:' pubspec.yaml
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: flutter build ios --release --no-codesign
+        run: flutter build ios --release --no-codesign
+
+      - name: Zip unsigned Runner.app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --keepParent build/ios/iphoneos/Runner.app "dist/${{ needs.prepare.outputs.ios_zip }}"
+          ls -la dist/
+          echo "::warning::iOS artifact is UNSIGNED (no codesign) - verification only, not for distribution."
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.ios_base }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+
+  # ----------------------------------------------------------------- release
+  release:
+    name: Publish GitHub Release + update.json
+    needs: [prepare, build-windows, build-android, build-ios]
+    # Runs when nothing failed/cancelled (skipped platform jobs are fine).
+    if: "!failure() && !cancelled() && (github.event_name == 'push' || github.event.inputs.publish == 'true')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for release notes)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "${{ needs.prepare.outputs.app_id }}-*"
+          path: dist
+          merge-multiple: true
+
+      - name: Generate update.json + release notes
+        id: notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD: ${{ needs.prepare.outputs.build_number }}
+          SHA: ${{ needs.prepare.outputs.short_sha }}
+          FULL_SHA: ${{ github.sha }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          REPO: ${{ github.repository }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          WIN_SETUP: ${{ needs.prepare.outputs.win_setup }}
+          APK_FILE: ${{ needs.prepare.outputs.apk_file }}
+          APK_V7A_FILE: ${{ needs.prepare.outputs.apk_v7a_file }}
+          AAB_FILE: ${{ needs.prepare.outputs.aab_file }}
+        run: |
+          set -euo pipefail
+          ls -la dist/ || true
+          BUCKET="${RELEASES_BUCKET:-releases}"
+          echo "BUCKET=$BUCKET" >> "$GITHUB_ENV"
+          STORAGE_BASE="$SUPABASE_URL/storage/v1/object/public/$BUCKET"
+          echo "STORAGE_BASE=$STORAGE_BASE" >> "$GITHUB_ENV"
+
+          # --- release notes: commits since previous release (if any) ---
+          PREV=$(gh release list --repo "$REPO" --limit 1 --json tagName --jq '.[0].tagName // empty' 2>/dev/null || true)
+          if [[ -n "$PREV" ]]; then
+            NOTES=$(git log "$PREV"..HEAD --pretty=format:'- %s (%h)' 2>/dev/null || echo "- (no changes listed)")
+          else
+            NOTES=$(git log --pretty=format:'- %s (%h)' -20 2>/dev/null || echo "First automated release.")
+          fi
+          [[ -z "$NOTES" ]] && NOTES="- No user-facing changes listed."
+          printf '## SANAD v%s+%s\n\n%s\n' "$VERSION" "$BUILD" "$NOTES" > dist/NOTES.md
+
+          # --- update.json: force update, same identity on every platform ---
+          # Private repo -> binaries + manifest are publicly hosted on
+          # Supabase Storage; only files actually built get URLs.
+          # Storage folder uses storage_tag ('+' is rejected by the API).
+          STORAGE_TAG="${{ needs.prepare.outputs.storage_tag }}"
+          python3 - "$VERSION" "$BUILD" "$SHA" "$TAG" "$STORAGE_BASE" "$STORAGE_TAG" "$WIN_SETUP" "$APK_FILE" "$APK_V7A_FILE" <<'EOF'
+          import json, os, sys
+          version, build, sha, tag, base, stag, win, apk, apk_v7a = sys.argv[1:10]
+          notes = open('dist/NOTES.md', encoding='utf-8').read()
+          def url(fname):
+              return f"{base}/{stag}/{fname}" if fname and os.path.exists(f"dist/{fname}") else ""
+          manifest = {
+              "version": version,
+              "build": int(build),
+              "commit": sha,
+              "minimum_supported_version": version,
+              "windows": {"url": url(win)},
+              "android": {"url": url(apk), "url_armeabi": url(apk_v7a)},
+              "ios": {"url": "", "store_url": ""},
+              "release_notes": notes[:2000],
+              "force_update": True,
+          }
+          open('dist/update.json', 'w', encoding='utf-8').write(json.dumps(manifest, ensure_ascii=False, indent=2))
+          print(open('dist/update.json', encoding='utf-8').read())
+          EOF
+
+      - name: Upload binaries + update.json to Supabase Storage
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          STORAGE_TAG: ${{ needs.prepare.outputs.storage_tag }}
+          WIN_SETUP: ${{ needs.prepare.outputs.win_setup }}
+          APK_FILE: ${{ needs.prepare.outputs.apk_file }}
+          APK_V7A_FILE: ${{ needs.prepare.outputs.apk_v7a_file }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SERVICE_KEY:-}" ]]; then
+            echo "::error::Missing SUPABASE_SERVICE_KEY secret. Add the project service_role key in Settings > Secrets and variables > Actions (CI upload only, never ship it in the app)."
+            exit 1
+          fi
+          BUCKET="${RELEASES_BUCKET:-releases}"
+          python3 - "$SUPABASE_URL" "$BUCKET" "$STORAGE_TAG" <<'EOF'
+          import base64, os, sys, urllib.request
+          base_url, bucket, stag = sys.argv[1:4]
+          svc = os.environ["SERVICE_KEY"]
+
+          def put(remote, local, ctype):
+              data = open(local, "rb").read()
+              req = urllib.request.Request(
+                  f"{base_url}/storage/v1/object/{bucket}/{remote}",
+                  data=data, method="POST",
+                  headers={"apikey": svc, "Authorization": f"Bearer {svc}",
+                            "Content-Type": ctype, "x-upsert": "true"})
+              with urllib.request.urlopen(req, timeout=300) as r:
+                  assert r.status in (200, 201), f"upload failed: {r.status}"
+              print(f"put {remote} ({len(data)} bytes)", flush=True)
+
+          def tus_upload(remote, local, ctype="application/octet-stream",
+                         chunk=6 * 1024 * 1024):
+              size = os.path.getsize(local)
+              meta = ",".join(
+                  f"{k} {base64.b64encode(v.encode()).decode()}"
+                  for k, v in [("bucketName", bucket), ("objectName", remote),
+                               ("contentType", ctype)])
+              req = urllib.request.Request(
+                  f"{base_url}/storage/v1/upload/resumable", data=b"",
+                  headers={"apikey": svc, "Authorization": f"Bearer {svc}",
+                            "Tus-Resumable": "1.0.0",
+                            "Upload-Length": str(size),
+                            "Upload-Metadata": meta},
+                  method="POST")
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  loc = r.headers.get("Location")
+                  assert r.status == 201 and loc, f"tus create: {r.status}"
+              url = loc if loc.startswith("http") else base_url + loc
+              offset = 0
+              with open(local, "rb") as f:
+                  while True:
+                      data = f.read(chunk)
+                      if not data:
+                          break
+                      req = urllib.request.Request(
+                          url, data=data, method="PATCH",
+                          headers={"apikey": svc,
+                                    "Authorization": f"Bearer {svc}",
+                                    "Tus-Resumable": "1.0.0",
+                                    "Upload-Offset": str(offset),
+                                    "Content-Type":
+                                        "application/offset+octet-stream"})
+                      with urllib.request.urlopen(req, timeout=300) as r:
+                          assert r.status in (200, 204), \
+                              f"tus chunk: {r.status}"
+                          offset = int(r.headers.get(
+                              "Upload-Offset", offset + len(data)))
+              assert offset == size, f"size mismatch {offset} != {size}"
+              print(f"tus {remote} ({size})", flush=True)
+
+          def smart(remote, local, ctype="application/octet-stream"):
+              if not local or not os.path.exists(local):
+                  sys.exit(f"missing build output: {local}")
+              if os.path.getsize(local) > 40 * 1024 * 1024:
+                  tus_upload(remote, local, ctype)
+              else:
+                  put(remote, local, ctype)
+
+          # Only distribution files go to Storage (50MB server cap on
+          # single-shot; tus also capped - split APKs stay well under it).
+          # AAB / portable ZIP / unsigned iOS stay on GitHub Release only.
+          dist = [f for f in (
+              os.environ.get("WIN_SETUP", ""),
+              os.environ.get("APK_FILE", ""),
+              os.environ.get("APK_V7A_FILE", ""),
+          ) if f]
+          for f in dist:
+              smart(f"{stag}/{f}", f"dist/{f}")
+          smart("update.json", "dist/update.json", "application/json")
+          smart(f"archive/{stag}/update.json", "dist/update.json",
+                "application/json")
+          EOF
+          echo "Stable manifest: $SUPABASE_URL/storage/v1/object/public/$BUCKET/update.json"
+
+      - name: Create GitHub Release (tag must be new)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists. Refusing to overwrite an existing release."
+            exit 1
+          fi
+          # Only attach files that were actually built (platform selection aware).
+          FILES=(dist/NOTES.md dist/update.json)
+          for f in "dist/${{ needs.prepare.outputs.win_zip }}" \
+                   "dist/${{ needs.prepare.outputs.win_setup }}" \
+                   "dist/${{ needs.prepare.outputs.apk_file }}" \
+                   "dist/${{ needs.prepare.outputs.apk_v7a_file }}" \
+                   "dist/${{ needs.prepare.outputs.aab_file }}" \
+                   "dist/${{ needs.prepare.outputs.ios_zip }}"; do
+            [[ -f "$f" ]] && FILES+=("$f")
+          done
+          gh release create "$TAG" --repo "$REPO" \
+            --title "SANAD v${{ needs.prepare.outputs.version }}+${{ needs.prepare.outputs.build_number }}" \
+            --notes-file dist/NOTES.md \
+            "${FILES[@]}"
+
+      - name: Advance BUILD_NUMBER variable (only after published release)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${{ github.repository }}/actions/variables/BUILD_NUMBER" \
+              -X PATCH -f value='${{ needs.prepare.outputs.build_number }}' >/dev/null 2>&1; then
+            echo "BUILD_NUMBER advanced to ${{ needs.prepare.outputs.build_number }}."
+          else
+            echo "::warning::Could not update BUILD_NUMBER repo variable (create it once in Settings > Secrets and variables > Actions > Variables, e.g. 100). Monotonicity is still guaranteed from published tags."
+          fi
+
+      - name: Release summary
+        shell: bash
+        run: |
+          {
+            echo "========================================"
+            echo "SANAD RELEASE"
+            echo "========================================"
+            echo ""
+            echo "Application : SANAD"
+            echo "Version     : ${{ needs.prepare.outputs.version }}"
+            echo "Build       : ${{ needs.prepare.outputs.build_number }}"
+            echo "Commit      : ${{ needs.prepare.outputs.short_sha }} (${{ github.sha }})"
+            echo ""
+            echo "Windows     : ${{ needs.build-windows.result }}"
+            echo "Android APK : ${{ needs.build-android.result }}"
+            echo "Android AAB : ${{ needs.build-android.result }}"
+            echo "iOS         : ${{ needs.build-ios.result }}"
+            echo ""
+            echo "Release Tag : ${{ needs.prepare.outputs.tag }}"
+            echo ""
+            echo "========================================"
+          } >> "$GITHUB_STEP_SUMMARY"

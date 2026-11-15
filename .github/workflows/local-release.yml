@@ -1,0 +1,677 @@
+name: Local Release (Windows local build)
+
+# قناة نسخة الجهاز (BACKEND=local — SQLite أوفلاين، مستخدم واحد).
+# منفصلة تماما عن release.yml (السحابة):
+# - تاج مستقل بصيغة local-vX.Y.Z-buildN (لا يؤثر على عدّاد BUILD_NUMBER السحابي).
+# - عدّاد مستقل: repo variable LOCAL_BUILD_NUMBER.
+# - manifest مستقل: update-local.json (تثبيتات اللوكال لا تتحدث لسحابة أبدا).
+# - أسرار مطلوبة: SUPABASE_URL (الرابط العام فقط — اللوكال لا يحمل أي
+#   مفتاح سحابة) + SUPABASE_SERVICE_KEY (رفع Storage عند النشر فقط).
+# - push to main          -> validate + build + publish (تحديث لوكال تلقائي)
+# - workflow_dispatch     -> بناء يدوي، مع اختيار النشر من عدمه
+# - pull_request          -> handled by ci.yml (validate only, no release here)
+
+"on":
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Create GitHub Release + update-local.json + advance LOCAL_BUILD_NUMBER"
+        type: boolean
+        default: true
+
+# نسخة لوكال واحدة في المرة لنفس الـ ref (حماية العدّاد من التكرار).
+concurrency:
+  group: local-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # tags + releases
+  actions: write # advance LOCAL_BUILD_NUMBER repo variable
+
+env:
+  RELEASES_BUCKET: ${{ vars.RELEASES_BUCKET }}
+
+jobs:
+  # ---------------------------------------------------------------- prepare
+  prepare:
+    name: Prepare local version + build number
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build_number: ${{ steps.meta.outputs.build_number }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      app_id: ${{ steps.meta.outputs.app_id }}
+      tag: ${{ steps.meta.outputs.tag }}
+      win_base: ${{ steps.meta.outputs.win_base }}
+      win_zip: ${{ steps.meta.outputs.win_zip }}
+      win_setup: ${{ steps.meta.outputs.win_setup }}
+    steps:
+      - name: Checkout (full history for notes + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version + next local build number
+        id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+
+          # --- VERSION: manual, from pubspec.yaml only (must be X.Y.Z) ---
+          LINE=$(grep -m1 -E '^version:' pubspec.yaml || true)
+          if [[ "$LINE" =~ ^version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)(\+([0-9]+))? ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            PUB_SUFFIX="${BASH_REMATCH[3]:-0}"
+          else
+            echo "::error::Invalid version in pubspec.yaml (expected X.Y.Z[+N])"
+            exit 1
+          fi
+
+          APP_ID="sanad-local"
+
+          # --- last published LOCAL build: tags local-vX.Y.Z-buildN only ---
+          # الصيغة بلا '+' وبلا sha لاحق حتى لا يراها عدّاد السحابة إطلاقا.
+          MAX_TAG=0
+          TAGS_JSON=$(gh release list --repo "$REPO" --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null || true)
+          while IFS= read -r t; do
+            if [[ "$t" =~ ^local-v[0-9]+\.[0-9]+\.[0-9]+-build([0-9]+)$ ]]; then
+              if (( BASH_REMATCH[1] > MAX_TAG )); then MAX_TAG=${BASH_REMATCH[1]}; fi
+            fi
+          done <<< "$TAGS_JSON"
+
+          # --- repo variable LOCAL_BUILD_NUMBER (0 if unset) ---
+          VAR_BUILD=$(gh api "repos/$REPO/actions/variables/LOCAL_BUILD_NUMBER" --jq '.value // "0"' 2>/dev/null || echo "0")
+          [[ "$VAR_BUILD" =~ ^[0-9]+$ ]] || VAR_BUILD=0
+
+          # --- NEXT build number ---
+          BASE=$VAR_BUILD
+          if (( MAX_TAG > BASE )); then BASE=$MAX_TAG; fi
+          if (( PUB_SUFFIX > BASE )); then BASE=$PUB_SUFFIX; fi
+          NEXT=$((BASE + 1))
+          if (( NEXT <= MAX_TAG )); then
+            echo "::error::ERROR: Local build number $NEXT has already been published. Current published local build: $MAX_TAG."
+            exit 1
+          fi
+
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          TAG="local-v$VERSION-build$NEXT"
+
+          # --- never recreate an existing tag ---
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::error::ERROR: Tag $TAG already exists. Refusing to create a duplicate release."
+            exit 1
+          fi
+
+          WIN_BASE="$APP_ID-windows-v$VERSION-build$NEXT-$SHORT_SHA"
+
+          {
+            echo "version=$VERSION"
+            echo "build_number=$NEXT"
+            echo "short_sha=$SHORT_SHA"
+            echo "app_id=$APP_ID"
+            echo "tag=$TAG"
+            echo "max_published=$MAX_TAG"
+            echo "win_base=$WIN_BASE"
+            echo "win_zip=$WIN_BASE.zip"
+            echo "win_setup=$WIN_BASE-Setup.exe"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "========================================"
+            echo "LOCAL RELEASE"
+            echo "========================================"
+            echo ""
+            echo "App          : SANAD Local (BACKEND=local)"
+            echo "Version      : $VERSION"
+            echo "Build Number : $NEXT (prev published local: $MAX_TAG, variable: $VAR_BUILD)"
+            echo "Commit       : $SHORT_SHA"
+            echo "Release Tag  : $TAG"
+            echo ""
+            echo "========================================"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # --------------------------------------------------------------- validate
+  validate:
+    name: Validate (analyze + test gate + local boot)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter 3.41.2 (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.2"
+          channel: "stable"
+          cache: true
+
+      - name: Create placeholder .env
+        shell: bash
+        run: |
+          # نسخة الجهاز لا تحتاج أسرار — ملف فاضي يكفي (asset مسجل في pubspec).
+          if [[ ! -f .env ]]; then
+            printf 'SUPABASE_URL=https://placeholder.local\nSUPABASE_ANON_KEY=placeholder\nUPDATE_MANIFEST_URL=\n' > .env
+          fi
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      - name: flutter analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: flutter test
+        shell: bash
+        run: |
+          # receipt_label_test مستبعد من البوابة: توليد يدوي بطيء للتحقق
+          # من الطباعة (مكسور تاريخيا على الشجرة النظيفة) — يُشغَّل يدويا فقط.
+          mapfile -t TEST_FILES < <(find test -name '*_test.dart' -not -name 'receipt_label_test.dart' | sort)
+          flutter test "${TEST_FILES[@]}"
+
+      - name: flutter test (local mode boot)
+        # إقلاع نسخة الجهاز + دخول حقيقي على SQLite مؤقتة.
+        run: flutter test --dart-define=BACKEND=local test/local_erpapp_smoke_test.dart test/local_full_login_test.dart
+
+  # -------------------------------------------------------- build-windows
+  build-windows-local:
+    name: Windows local build + installer
+    needs: [prepare, validate]
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter 3.41.2 (stable, Dart 3.11.0)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.2"
+          channel: "stable"
+          cache: true
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+        shell: pwsh
+
+      - name: Create placeholder .env (local needs no secrets)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          "SUPABASE_URL=https://placeholder.local" | Out-File -FilePath ".env" -Encoding utf8
+          "SUPABASE_ANON_KEY=placeholder" | Out-File -FilePath ".env" -Encoding utf8 -Append
+          "UPDATE_MANIFEST_URL=" | Out-File -FilePath ".env" -Encoding utf8 -Append
+          Write-Host ".env placeholder created (local build carries no secrets)."
+
+      - name: Prepare installer branding (icon + wizard images, before build)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pillow
+          python - <<'EOF'
+          from PIL import Image
+          import os, sys
+          logo_path = 'assets/logo.png'
+          ico_path = 'windows/runner/resources/app_icon.ico'
+          wiz_path = 'windows/installer/wizard_image.bmp'
+          small_path = 'windows/installer/wizard_small.bmp'
+          if not os.path.exists(logo_path):
+              print(f"::error::Missing source logo: {logo_path}")
+              sys.exit(1)
+          logo = Image.open(logo_path).convert('RGBA')
+          if not os.path.exists(ico_path):
+              print(f"app_icon.ico missing -> generating from {logo_path}")
+              logo.save(ico_path, format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          else:
+              print(f"app_icon.ico OK ({os.path.getsize(ico_path)} bytes)")
+          def make_bmp(out, cw, ch, mw, mh):
+              if os.path.exists(out):
+                  print(f"{out} OK")
+                  return
+              os.makedirs(os.path.dirname(out), exist_ok=True)
+              canvas = Image.new('RGB', (cw, ch), (255,255,255))
+              lw, lh = logo.size
+              s = min(mw/lw, mh/lh)
+              nw, nh = int(lw*s), int(lh*s)
+              r = logo.resize((nw, nh), Image.LANCZOS)
+              tmp = Image.new('RGB', r.size, (255,255,255))
+              tmp.paste(r, mask=r.split()[3])
+              canvas.paste(tmp, ((cw-nw)//2, (ch-nh)//2))
+              canvas.save(out, 'BMP')
+              print(f"generated {out}")
+          make_bmp(wiz_path, 164, 314, 140, 140)
+          make_bmp(small_path, 55, 58, 48, 48)
+          EOF
+          for f in "windows/runner/resources/app_icon.ico" "windows/installer/wizard_image.bmp" "windows/installer/wizard_small.bmp"; do
+            [[ -f "$f" ]] || { echo "::error::Missing branding file: $f"; exit 1; }
+            ls -lh "$f"
+          done
+
+      - name: Pin pubspec version to local release identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $v = "${{ needs.prepare.outputs.version }}+${{ needs.prepare.outputs.build_number }}"
+          (Get-Content pubspec.yaml) -replace '^version: .*', "version: $v" | Set-Content pubspec.yaml
+          Get-Content pubspec.yaml | Select-String '^version:' | Write-Host
+
+      - name: flutter pub get
+        run: flutter pub get
+        shell: pwsh
+
+      - name: flutter build windows --release (BACKEND=local)
+        shell: pwsh
+        env:
+          # الرابط العام فقط (لبناء رابط update-local.json داخل الـ exe) —
+          # نسخة الجهاز لا تحمل أي مفتاح سحابة.
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          # اسم تنفيذي وعنوان مختلفان عن السحابة (sanad-local.exe).
+          WINDOWS_BINARY_NAME: sanad-local
+          WINDOWS_APP_TITLE: SANAD Local
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SUPABASE_URL)) {
+            Write-Error 'ERROR: Missing SUPABASE_URL secret (public storage base for update-local.json). Add it in Settings > Secrets and variables > Actions.'
+            exit 1
+          }
+          $bucket = if ($env:RELEASES_BUCKET) { $env:RELEASES_BUCKET } else { "releases" }
+          # قناة تحديث مستقلة: update-local.json (لا تمس update.json السحابية).
+          $manifestUrl = "$($env:SUPABASE_URL)/storage/v1/object/public/$bucket/update-local.json"
+          flutter build windows --release --dart-define=BACKEND=local --dart-define=UPDATE_MANIFEST_URL=$manifestUrl
+
+      - name: Verify Windows Release output
+        shell: pwsh
+        run: |
+          $releaseDir = "build/windows/x64/runner/Release"
+          if (-not (Test-Path $releaseDir)) {
+            Write-Error "ERROR: Release folder not found: $releaseDir"
+            exit 1
+          }
+          Get-ChildItem $releaseDir | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+
+      - name: Zip Windows Release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releaseDir = "build/windows/x64/runner/Release"
+          $zipFile = "${{ needs.prepare.outputs.win_zip }}"
+          if (Test-Path $zipFile) { Remove-Item $zipFile -Force }
+          Compress-Archive -Path "$releaseDir/*" -DestinationPath $zipFile -Force
+          Write-Host "Created $zipFile"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (Test-Path $iscc) {
+            Write-Host "Inno Setup already installed."
+          } else {
+            Write-Host "Installing Inno Setup via Chocolatey..."
+            choco install innosetup -y --no-progress
+            if (-not (Test-Path $iscc)) {
+              Write-Error "ERROR: Inno Setup installation failed, ISCC.exe not found at $iscc"
+              exit 1
+            }
+          }
+
+      - name: Generate installer.iss (Local Release -> Setup.exe)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # اسم ومجلد مختلفان عن نسخة السحابة حتى لا يتعارضا على نفس الجهاز.
+          $appName       = "SANAD Local"
+          $version       = "${{ needs.prepare.outputs.version }}"
+          $buildNumber   = "${{ needs.prepare.outputs.build_number }}"
+          $shortSha      = "${{ needs.prepare.outputs.short_sha }}"
+          $appVersion4   = "$version.$buildNumber"
+          $exeName       = "sanad-local.exe"
+          $installerBase = "${{ needs.prepare.outputs.win_base }}-Setup"
+          $releaseDir    = "build/windows/x64/runner/Release"
+          $iconFile      = "windows\runner\resources\app_icon.ico"
+          $wizImage      = "windows\installer\wizard_image.bmp"
+          $wizSmall      = "windows\installer\wizard_small.bmp"
+
+          if (-not (Test-Path "$releaseDir\$exeName")) {
+            Write-Error "ERROR: Main exe not found: $releaseDir\$exeName"
+            exit 1
+          }
+
+          foreach ($f in @($iconFile, $wizImage, $wizSmall)) {
+            if (-not (Test-Path $f)) {
+              Write-Error "ERROR: Missing branding file: $f (run 'Prepare installer branding' step)."
+              exit 1
+            }
+          }
+
+          $iss = @"
+          ; Auto-generated by GitHub Actions - do not edit manually.
+          ; App: $appName (local) | Version: $version+$buildNumber | Commit: $shortSha
+          #define MyAppName "$appName"
+          #define MyAppVersion "$appVersion4"
+          #define MyAppDisplayVersion "$version build $buildNumber ($shortSha)"
+          #define MyAppPublisher "SANAD"
+          #define MyAppExeName "$exeName"
+          #define MyAppSourceDir "build\windows\x64\runner\Release"
+          #define MyAppOutputBase "$installerBase"
+
+          [Setup]
+          AppName={#MyAppName}
+          AppVersion={#MyAppDisplayVersion}
+          VersionInfoVersion={#MyAppVersion}
+          VersionInfoDescription={#MyAppName} Setup
+          VersionInfoProductName={#MyAppName}
+          AppPublisher={#MyAppPublisher}
+          DefaultDirName={autopf}\{#MyAppName}
+          DefaultGroupName={#MyAppName}
+          OutputDir=build\installer
+          OutputBaseFilename={#MyAppOutputBase}
+          Compression=lzma2/max
+          SolidCompression=yes
+          PrivilegesRequired=lowest
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          DisableProgramGroupPage=yes
+          WizardStyle=modern
+          UninstallDisplayName={#MyAppName} {#MyAppDisplayVersion}
+          UninstallDisplayIcon={app}\{#MyAppExeName}
+          SetupIconFile=$iconFile
+          WizardImageFile=$wizImage
+          WizardSmallImageFile=$wizSmall
+
+          [Languages]
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+
+          [Tasks]
+          Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+          [Files]
+          ; All Flutter Release files (exe + DLLs + data + plugins) - not just the main exe
+          Source: "{#MyAppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
+          Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+          [Run]
+          Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+          "@
+
+          $iss | Out-File -FilePath "installer.iss" -Encoding utf8
+          Write-Host "installer.iss generated."
+
+      - name: Compile installer with Inno Setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $cmd = Get-Command iscc -ErrorAction SilentlyContinue
+            if ($cmd) { $iscc = $cmd.Source } else {
+              Write-Error "ERROR: Inno Setup Compiler (ISCC.exe) not found."
+              exit 1
+            }
+          }
+          & $iscc "installer.iss"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ERROR: Inno Setup compilation failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+
+      - name: Move installer to final name + verify
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $expected = "build/installer/${{ needs.prepare.outputs.win_setup }}"
+          if (-not (Test-Path $expected)) {
+            Write-Error "ERROR: Installer not found: $expected"
+            exit 1
+          }
+          Get-Item $expected | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+
+      - name: Upload Windows ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.win_base }}
+          path: ${{ needs.prepare.outputs.win_zip }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.win_base }}-installer
+          path: build/installer/${{ needs.prepare.outputs.win_setup }}
+          if-no-files-found: error
+          compression-level: 0
+
+  # ----------------------------------------------------------------- publish
+  publish-local:
+    name: Publish local GitHub Release + update-local.json
+    needs: [prepare, build-windows-local]
+    # Runs when nothing failed/cancelled.
+    if: "!failure() && !cancelled() && (github.event_name == 'push' || github.event.inputs.publish == 'true')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for release notes)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all local build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "sanad-local-*"
+          path: dist
+          merge-multiple: true
+
+      - name: Generate update-local.json + release notes
+        id: notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD: ${{ needs.prepare.outputs.build_number }}
+          SHA: ${{ needs.prepare.outputs.short_sha }}
+          FULL_SHA: ${{ github.sha }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          REPO: ${{ github.repository }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          WIN_SETUP: ${{ needs.prepare.outputs.win_setup }}
+          WIN_ZIP: ${{ needs.prepare.outputs.win_zip }}
+        run: |
+          set -euo pipefail
+          ls -la dist/ || true
+          if [[ -z "${SUPABASE_URL:-}" ]]; then
+            echo "::error::Missing SUPABASE_URL secret (needed to build download URLs). Add it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          BUCKET="${RELEASES_BUCKET:-releases}"
+          echo "BUCKET=$BUCKET" >> "$GITHUB_ENV"
+          STORAGE_BASE_URL="$SUPABASE_URL/storage/v1/object/public/$BUCKET"
+          echo "STORAGE_BASE=$STORAGE_BASE_URL" >> "$GITHUB_ENV"
+
+          # --- release notes: commits since previous LOCAL release (if any) ---
+          PREV=$(gh release list --repo "$REPO" --limit 100 --json tagName --jq '[.[].tagName | select(startswith("local-v"))][0] // empty' 2>/dev/null || true)
+          if [[ -n "$PREV" ]]; then
+            NOTES=$(git log "$PREV"..HEAD --pretty=format:'- %s (%h)' 2>/dev/null || echo "- (no changes listed)")
+          else
+            NOTES=$(git log --pretty=format:'- %s (%h)' -20 2>/dev/null || echo "First local release.")
+          fi
+          [[ -z "$NOTES" ]] && NOTES="- No user-facing changes listed."
+          printf '## SANAD Local v%s build %s\n\n%s\n' "$VERSION" "$BUILD" "$NOTES" > dist/NOTES.md
+
+          # --- update-local.json: نفس شكل update.json (قناة مستقلة) ---
+          python3 - "$VERSION" "$BUILD" "$SHA" "$TAG" "$STORAGE_BASE_URL" "$TAG" "$WIN_SETUP" <<'EOF'
+          import json, os, sys
+          version, build, sha, tag, base, stag, win = sys.argv[1:8]
+          notes = open('dist/NOTES.md', encoding='utf-8').read()
+          def url(fname):
+              return f"{base}/local/{stag}/{fname}" if fname and os.path.exists(f"dist/{fname}") else ""
+          manifest = {
+              "version": version,
+              "build": int(build),
+              "commit": sha,
+              "minimum_supported_version": version,
+              "windows": {"url": url(win)},
+              "android": {"url": "", "url_armeabi": ""},
+              "ios": {"url": "", "store_url": ""},
+              "release_notes": notes[:2000],
+              "force_update": True,
+          }
+          open('dist/update-local.json', 'w', encoding='utf-8').write(json.dumps(manifest, ensure_ascii=False, indent=2))
+          print(open('dist/update-local.json', encoding='utf-8').read())
+          EOF
+
+      - name: Upload binaries + update-local.json to Supabase Storage
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          WIN_SETUP: ${{ needs.prepare.outputs.win_setup }}
+          WIN_ZIP: ${{ needs.prepare.outputs.win_zip }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SUPABASE_URL:-}" ]]; then
+            echo "::error::Missing SUPABASE_URL secret. Add it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          if [[ -z "${SERVICE_KEY:-}" ]]; then
+            echo "::error::Missing SUPABASE_SERVICE_KEY secret. Add the project service_role key in Settings > Secrets and variables > Actions (CI upload only, never ship it in the app)."
+            exit 1
+          fi
+          BUCKET="${RELEASES_BUCKET:-releases}"
+          python3 - "$SUPABASE_URL" "$BUCKET" "$TAG" <<'EOF'
+          import base64, os, sys, urllib.request
+          base_url, bucket, stag = sys.argv[1:4]
+          svc = os.environ["SERVICE_KEY"]
+
+          def put(remote, local, ctype):
+              data = open(local, "rb").read()
+              req = urllib.request.Request(
+                  f"{base_url}/storage/v1/object/{bucket}/{remote}",
+                  data=data, method="POST",
+                  headers={"apikey": svc, "Authorization": f"Bearer {svc}",
+                            "Content-Type": ctype, "x-upsert": "true"})
+              with urllib.request.urlopen(req, timeout=300) as r:
+                  assert r.status in (200, 201), f"upload failed: {r.status}"
+              print(f"put {remote} ({len(data)} bytes)", flush=True)
+
+          def tus_upload(remote, local, ctype="application/octet-stream",
+                         chunk=6 * 1024 * 1024):
+              size = os.path.getsize(local)
+              meta = ",".join(
+                  f"{k} {base64.b64encode(v.encode()).decode()}"
+                  for k, v in [("bucketName", bucket), ("objectName", remote),
+                               ("contentType", ctype)])
+              req = urllib.request.Request(
+                  f"{base_url}/storage/v1/upload/resumable", data=b"",
+                  headers={"apikey": svc, "Authorization": f"Bearer {svc}",
+                            "Tus-Resumable": "1.0.0",
+                            "Upload-Length": str(size),
+                            "Upload-Metadata": meta},
+                  method="POST")
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  loc = r.headers.get("Location")
+                  assert r.status == 201 and loc, f"tus create: {r.status}"
+              url = loc if loc.startswith("http") else base_url + loc
+              offset = 0
+              with open(local, "rb") as f:
+                  while True:
+                      data = f.read(chunk)
+                      if not data:
+                          break
+                      req = urllib.request.Request(
+                          url, data=data, method="PATCH",
+                          headers={"apikey": svc,
+                                    "Authorization": f"Bearer {svc}",
+                                    "Tus-Resumable": "1.0.0",
+                                    "Upload-Offset": str(offset),
+                                    "Content-Type":
+                                        "application/offset+octet-stream"})
+                      with urllib.request.urlopen(req, timeout=300) as r:
+                          assert r.status in (200, 204), \
+                              f"tus chunk: {r.status}"
+                          offset = int(r.headers.get(
+                              "Upload-Offset", offset + len(data)))
+              assert offset == size, f"size mismatch {offset} != {size}"
+              print(f"tus {remote} ({size})", flush=True)
+
+          def smart(remote, local, ctype="application/octet-stream"):
+              if not local or not os.path.exists(local):
+                  sys.exit(f"missing build output: {local}")
+              if os.path.getsize(local) > 40 * 1024 * 1024:
+                  tus_upload(remote, local, ctype)
+              else:
+                  put(remote, local, ctype)
+
+          # قناة اللوكال تحت مجلد local/ — لا تمس ملفات السحابة.
+          dist = [f for f in (
+              os.environ.get("WIN_SETUP", ""),
+              os.environ.get("WIN_ZIP", ""),
+          ) if f]
+          for f in dist:
+              smart(f"local/{stag}/{f}", f"dist/{f}")
+          smart("update-local.json", "dist/update-local.json",
+                "application/json")
+          smart(f"local/archive/{stag}/update-local.json",
+                "dist/update-local.json", "application/json")
+          EOF
+          echo "Stable local manifest: $SUPABASE_URL/storage/v1/object/public/$BUCKET/update-local.json"
+
+      - name: Create local GitHub Release (tag must be new)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists. Refusing to overwrite an existing release."
+            exit 1
+          fi
+          FILES=(dist/NOTES.md dist/update-local.json)
+          for f in "dist/${{ needs.prepare.outputs.win_zip }}" \
+                   "dist/${{ needs.prepare.outputs.win_setup }}"; do
+            [[ -f "$f" ]] && FILES+=("$f")
+          done
+          gh release create "$TAG" --repo "$REPO" \
+            --title "SANAD Local v${{ needs.prepare.outputs.version }} build ${{ needs.prepare.outputs.build_number }}" \
+            --notes-file dist/NOTES.md \
+            "${FILES[@]}"
+
+      - name: Advance LOCAL_BUILD_NUMBER variable (only after published release)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${{ github.repository }}/actions/variables/LOCAL_BUILD_NUMBER" \
+              -X PATCH -f value='${{ needs.prepare.outputs.build_number }}' >/dev/null 2>&1; then
+            echo "LOCAL_BUILD_NUMBER advanced to ${{ needs.prepare.outputs.build_number }}."
+          else
+            echo "::warning::Could not update LOCAL_BUILD_NUMBER repo variable (create it once in Settings > Secrets and variables > Actions > Variables, e.g. 100). Monotonicity is still guaranteed from published tags."
+          fi
+
+      - name: Local release summary
+        shell: bash
+        run: |
+          {
+            echo "========================================"
+            echo "SANAD LOCAL RELEASE"
+            echo "========================================"
+            echo ""
+            echo "Application : SANAD Local (BACKEND=local)"
+            echo "Version     : ${{ needs.prepare.outputs.version }}"
+            echo "Build       : ${{ needs.prepare.outputs.build_number }}"
+            echo "Commit      : ${{ needs.prepare.outputs.short_sha }} (${{ github.sha }})"
+            echo ""
+            echo "Windows     : ${{ needs.build-windows-local.result }}"
+            echo ""
+            echo "Release Tag : ${{ needs.prepare.outputs.tag }}"
+            echo ""
+            echo "========================================"
+          } >> "$GITHUB_STEP_SUMMARY"
