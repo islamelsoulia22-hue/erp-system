@@ -89,7 +89,8 @@ abstract final class AppTheme {
         foregroundColor: textColor,
         elevation: 0,
         scrolledUnderElevation: 1,
-        centerTitle: false,
+        centerTitle: false,      
+        toolbarHeight: 60,
         titleTextStyle:
             style(size: 17, weight: FontWeight.w700),
       ),
@@ -98,7 +99,7 @@ abstract final class AppTheme {
         elevation: 0,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(20),
           side: BorderSide(
               color: isDark
                   ? AppColors.darkDivider
@@ -122,21 +123,21 @@ abstract final class AppTheme {
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(16),
           borderSide: BorderSide(
               color: isDark
                   ? AppColors.darkDivider
                   : AppColors.border),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(16),
           borderSide: BorderSide(
               color: isDark
                   ? AppColors.darkDivider
                   : AppColors.border),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(16),
           borderSide:
               const BorderSide(color: AppColors.primary, width: 1.5),
         ),
@@ -154,7 +155,7 @@ abstract final class AppTheme {
           padding:
               const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10)),
+              borderRadius: BorderRadius.circular(16)),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
@@ -163,7 +164,7 @@ abstract final class AppTheme {
           padding:
               const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
           shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10)),
+              borderRadius: BorderRadius.circular(16)),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
@@ -223,7 +224,7 @@ abstract final class AppTheme {
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10)),
+            borderRadius: BorderRadius.circular(16)),
       ),
     );
   }
