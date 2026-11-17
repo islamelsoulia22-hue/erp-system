@@ -225,15 +225,15 @@ abstract final class ErpNav {
   }
 }
 
-/// Mobile bottom bar: exactly 5 destinations.
+/// الشريط السفلي المتحرك (YadBottomNav): 4 وجهات + "المزيد".
 abstract final class BottomNav {
   static const items = [
-    ErpNavItem('الرئيسية', Icons.dashboard_outlined, '/'),
-    ErpNavItem('المبيعات', Icons.point_of_sale_outlined,
+    ErpNavItem('الرئيسية', Icons.home_outlined, '/'),
+    ErpNavItem('المبيعات', Icons.receipt_long_outlined,
         '/sales', Permissions.salesView),
-    ErpNavItem('المخزون', Icons.inventory_outlined,
+    ErpNavItem('المخزون', Icons.inventory_2_outlined,
         '/inventory', Permissions.inventoryView),
-    ErpNavItem('الإشعارات', Icons.notifications_outlined,
+    ErpNavItem('الإشعارات', Icons.notifications_none_outlined,
         '/notifications'),
   ];
 }
@@ -243,6 +243,7 @@ String pageTitleFor(String path) {
   const titles = {
     '/': 'لوحة التحكم',
     '/approvals': 'مركز الموافقات',
+    '/more': 'المزيد',
     '/sales': 'فواتير المبيعات',
     '/serials/verify': 'تحقق من السيريال',
     '/shipping': 'الشحن',

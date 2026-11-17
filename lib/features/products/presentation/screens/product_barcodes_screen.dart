@@ -9,7 +9,9 @@ import '../../../../core/printing/usb_receipt_printer.dart';
 import '../../../../core/printing/xprinter_service.dart';
 import '../../../../core/permissions/permissions.dart';
 import '../../../../core/responsive/responsive.dart';
+import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_spacing.dart';
+import '../../../../core/widgets/yad_widgets.dart';
 import '../../../../core/widgets/app_card.dart';
 import '../../../../core/widgets/app_pagination.dart';
 import '../../../../core/widgets/app_states.dart';
@@ -878,18 +880,42 @@ class _ProductBarcodeCard extends StatelessWidget {
     required this.onOpen,
   });
 
+  Widget _tonal(BuildContext context, String label, VoidCallback? onTap) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return TapScale(
+      onTap: onTap,
+      semanticLabel: label,
+      child: Container(
+        height: 44,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: dark
+              ? AppColors.indigo.withValues(alpha: .22)
+              : AppColors.primaryContainer,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                fontFamily: 'Cairo',
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: onTap == null
+                    ? AppColors.mutedText
+                    : (dark ? AppColors.darkPrimary : AppColors.indigoDeep))),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final code =
-        (product.primaryBarcode ?? '').trim();
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    final code = (product.primaryBarcode ?? '').trim();
     final hasCode = code.isNotEmpty;
     return AppCard(
       onTap: onOpen,
-      padding:
-          const EdgeInsets.all(AppSpacing.md),
       child: Column(
-        crossAxisAlignment:
-            CrossAxisAlignment.stretch,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
@@ -897,149 +923,116 @@ class _ProductBarcodeCard extends StatelessWidget {
                 Checkbox(
                   value: selected,
                   onChanged: onToggle,
-                  visualDensity:
-                      VisualDensity.compact,
+                  visualDensity: VisualDensity.compact,
                 ),
               Expanded(
-                child: Column(
-                  crossAxisAlignment:
-                      CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      product.name,
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleSmall,
-                      maxLines: 2,
-                      overflow:
-                          TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      hasCode
-                          ? code
-                          : 'بدون باركود — أضف رقما يدوي أو بالسكانر',
-                      textDirection:
-                          TextDirection.ltr,
-                      textAlign: TextAlign.left,
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodySmall
-                          ?.copyWith(
-                            letterSpacing: 1.2,
-                            color: hasCode
-                                ? null
-                                : Theme.of(
-                                    context,
-                                  ).colorScheme.error,
-                          ),
-                    ),
-                  ],
+                child: Text(
+                  product.name,
+                  style: theme.textTheme.titleMedium,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const SizedBox(
-                width: AppSpacing.sm,
-              ),
-              if (hasCode)
-                SizedBox(
-                  width: 120,
-                  height: 52,
-                  child: bw.BarcodeWidget(
-                    data: code,
-                    barcode:
-                        bw.Barcode.code128(),
-                    drawText: false,
-                    errorBuilder: (_, _) =>
-                        const Icon(
-                      Icons
-                          .barcode_reader,
-                      size: 32,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: AppSpacing.sm),
-          Wrap(
-            spacing: AppSpacing.sm,
-            runSpacing: AppSpacing.sm,
-            children: [
-              if (hasCode)
-                FilledButton.icon(
-                  onPressed: onXPrinter,
-                  icon: const Icon(
-                    Icons.label_outlined,
-                    size: 18,
-                  ),
-                  label:
-                      const Text('XPrinter'),
-                ),
-              if (hasCode)
-                FilledButton.tonalIcon(
-                  onPressed: onPrint,
-                  icon: const Icon(
-                    Icons.print_outlined,
-                    size: 18,
-                  ),
-                  label:
-                      const Text('A4'),
-                ),
-              if (hasCode && onReceipt != null)
-                FilledButton.tonalIcon(
-                  onPressed: onReceipt,
-                  icon: const Icon(
-                    Icons
-                        .receipt_long_outlined,
-                    size: 18,
-                  ),
-                  label:
-                      const Text('ريسيت'),
-                ),
-              if (hasCode)
-                OutlinedButton.icon(
-                  onPressed: onPreview,
-                  icon: const Icon(
-                    Icons.visibility_outlined,
-                    size: 18,
-                  ),
-                  label:
-                      const Text('معاينة'),
-                ),
               if (canEdit)
-                OutlinedButton.icon(
-                  onPressed: onAdd,
-                  icon: const Icon(
-                    Icons.edit_outlined,
-                    size: 18,
-                  ),
-                  label: Text(
-                    hasCode
-                        ? 'تعديل الباركود'
-                        : 'إضافة باركود',
+                TapScale(
+                  onTap: onAdd,
+                  semanticLabel:
+                      hasCode ? 'تعديل الباركود' : 'إضافة باركود',
+                  child: YadIconTile(
+                    icon: hasCode
+                        ? Icons.edit_outlined
+                        : Icons.add_circle_outline,
+                    size: 38,
+                    radius: 13,
                   ),
                 ),
-              if (canEdit && !hasCode)
-                OutlinedButton.icon(
-                  onPressed: onScanAdd,
-                  icon: const Icon(
-                    Icons
-                        .qr_code_scanner_outlined,
-                    size: 18,
-                  ),
-                  label:
-                      const Text('مسح سكانر'),
-                ),
-              TextButton.icon(
-                onPressed: onOpen,
-                icon: const Icon(
-                  Icons.open_in_new_outlined,
-                  size: 18,
-                ),
-                label:
-                    const Text('فتح الصنف'),
-              ),
             ],
           ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: dark ? AppColors.darkBackground : AppColors.mist,
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: hasCode
+                ? Column(
+                    children: [
+                      SizedBox(
+                        height: 60,
+                        child: bw.BarcodeWidget(
+                          data: code,
+                          barcode: bw.Barcode.code128(),
+                          drawText: false,
+                          color: dark ? Colors.white : AppColors.ink,
+                          errorBuilder: (_, _) => const Icon(
+                              Icons.qr_code_2_outlined,
+                              size: 40),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(code,
+                          textDirection: TextDirection.ltr,
+                          style: theme.textTheme.titleSmall?.copyWith(
+                              letterSpacing: 3,
+                              fontWeight: FontWeight.w700)),
+                    ],
+                  )
+                : Column(
+                    children: [
+                      Text(
+                        'بدون باركود — أضف رقما يدويا أو بالسكانر',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(color: AppColors.danger),
+                      ),
+                      if (canEdit) ...[
+                        const SizedBox(height: 10),
+                        _tonal(context, 'مسح سكانر', onScanAdd),
+                      ],
+                    ],
+                  ),
+          ),
+          if (hasCode) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(child: _tonal(context, 'ريسيت', onReceipt)),
+                const SizedBox(width: 8),
+                Expanded(child: _tonal(context, 'A4', onPrint)),
+                const SizedBox(width: 8),
+                Expanded(child: _tonal(context, 'XPrinter', onXPrinter)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: GradientButton(
+                    label: 'طباعة XPrinter',
+                    height: 46,
+                    expand: true,
+                    onPressed: onXPrinter,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 110,
+                  height: 46,
+                  child: OutlinedButton(
+                    onPressed: onPreview,
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(0, 46),
+                      padding: EdgeInsets.zero,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(15)),
+                    ),
+                    child: const Text('معاينة'),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

@@ -6,9 +6,9 @@ import '../../../../core/backend/backend_mode.dart';
 import '../../../../core/network/supabase_client.dart';
 import '../../../../core/responsive/responsive.dart';
 import '../../../../core/theme/app_colors.dart';
-import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/app_nav.dart';
 import '../../../../core/widgets/app_sidebar.dart';
+import '../../../../core/widgets/yad_widgets.dart';
 import '../../../auth/data/auth_repository.dart';
 import '../../../auth/presentation/providers/auth_providers.dart';
 import '../../../procurement/data/procurement_repository.dart';
@@ -59,10 +59,24 @@ String sectionHomeOf(String path) {
 
 /// زرار الرجوع (سهم يمين = اتجاه الرجوع في العربي).
 Widget backButton(BuildContext context) {
-  return IconButton(
-    tooltip: 'رجوع',
-    icon: const Icon(Icons.arrow_forward),
-    onPressed: () => safeBack(context),
+  final dark = Theme.of(context).brightness == Brightness.dark;
+  return Center(
+    child: TapScale(
+      onTap: () => safeBack(context),
+      semanticLabel: 'رجوع',
+      child: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(
+              color: dark ? AppColors.darkDivider : AppColors.border),
+        ),
+        child: Icon(Icons.arrow_forward,
+            size: 20, color: Theme.of(context).colorScheme.onSurface),
+      ),
+    ),
   );
 }
 class AppShell extends ConsumerStatefulWidget {
@@ -317,13 +331,22 @@ class _AppShellState extends ConsumerState<AppShell>
         }
 
         // Mobile.
-        final selected = _bottomIndex(path, bottomItems);
+        final unread = ref.watch(unreadCountProvider).maybeWhen(
+              data: (n) => n,
+              orElse: () => 0,
+            );
+        final onMore = path == '/more';
+        var selected = _bottomIndex(path, bottomItems);
+        if (onMore || selected < 0) selected = bottomItems.length;
+        // الرئيسية والمزيد برأس مخصص داخل الشاشة نفسها.
+        final customHeader = path == '/' || onMore;
         return Scaffold(
           key: _scaffoldKey,
-          appBar: path == '/'
+          appBar: customHeader
               ? null
               : AppBar(
                   title: Text(title),
+                  leadingWidth: 64,
                   leading: backButton(context),
                   actions: [
                     IconButton(
@@ -332,15 +355,26 @@ class _AppShellState extends ConsumerState<AppShell>
                       onPressed: _refreshPerms,
                     ),
                     const _BellButton(),
+                    const SizedBox(width: 6),
                   ],
                 ),
           drawer: drawer,
           body: widget.child,
-          bottomNavigationBar: _YadBottomBar(
-            items: bottomItems,
-            selectedIndex: selected,
-            onSelect: (i) => context.go(bottomItems[i].route),
-            onMore: () => _scaffoldKey.currentState?.openDrawer(),
+          bottomNavigationBar: YadBottomNav(
+            selected: selected,
+            onTap: (i) {
+              if (i >= bottomItems.length) {
+                context.go('/more');
+                return;
+              }
+              context.go(bottomItems[i].route);
+            },
+            items: [
+              for (final item in bottomItems)
+                YadNavDestination(item.title, item.icon,
+                    badge: item.route == '/notifications' ? unread : 0),
+              const YadNavDestination('المزيد', Icons.grid_view_rounded),
+            ],
           ),
         );
       },
@@ -368,15 +402,9 @@ class _BellButton extends ConsumerWidget {
         ),
         if (unread > 0)
           PositionedDirectional(
-            end: 6,
-            top: 6,
-            child: CircleAvatar(
-              radius: 9,
-              backgroundColor: AppColors.danger,
-              child: Text('$unread',
-                  style: const TextStyle(
-                      fontSize: 11, color: Colors.white)),
-            ),
+            end: 4,
+            top: 4,
+            child: IgnorePointer(child: PulseBadge(count: unread)),
           ),
       ],
     );
@@ -438,155 +466,6 @@ class _DesktopHeader extends ConsumerWidget {
           Text(userName,
               style: theme.textTheme.labelLarge),
         ],
-      ),
-    );
-  }
-}
-
-
-/// YAD floating navigation: midnight surface and a springy active bubble.
-class _YadBottomBar extends StatelessWidget {
-  final List<ErpNavItem> items;
-  final int selectedIndex;
-  final ValueChanged<int> onSelect;
-  final VoidCallback onMore;
-
-  const _YadBottomBar({
-    required this.items,
-    required this.selectedIndex,
-    required this.onSelect,
-    required this.onMore,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final visible = items.take(4).toList();
-    return SafeArea(
-      top: false,
-      minimum: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-      child: Container(
-        height: 76,
-        padding: const EdgeInsets.symmetric(horizontal: 7),
-        decoration: BoxDecoration(
-          color: const Color(0xFF12163A),
-          borderRadius: BorderRadius.circular(30),
-          border: Border.all(color: const Color(0xFF2A2F8A)),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF12163A).withValues(alpha: .20),
-              blurRadius: 24,
-              offset: const Offset(0, 10),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            for (var i = 0; i < visible.length; i++)
-              Expanded(
-                child: _YadNavItem(
-                  item: visible[i],
-                  selected: selectedIndex == i,
-                  onTap: () => onSelect(i),
-                ),
-              ),
-            Expanded(
-              child: _YadNavItem(
-                item: const ErpNavItem(
-                    'المزيد', Icons.grid_view_rounded, ''),
-                selected: false,
-                onTap: onMore,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _YadNavItem extends StatelessWidget {
-  final ErpNavItem item;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _YadNavItem({
-    required this.item,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    const muted = Color(0xFF8E93C8);
-    return Semantics(
-      button: true,
-      selected: selected,
-      label: item.title,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(22),
-        child: SizedBox.expand(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              AnimatedSlide(
-                duration: const Duration(milliseconds: 450),
-                curve: const Cubic(.34, 1.56, .64, 1),
-                offset: selected ? const Offset(0, -.16) : Offset.zero,
-                child: AnimatedContainer(
-                duration: const Duration(milliseconds: 450),
-                curve: const Cubic(.34, 1.56, .64, 1),
-                width: selected ? 52 : 42,
-                height: selected ? 52 : 42,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: selected
-                      ? const LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [Color(0xFF4F46FF), Color(0xFF8B5CF6)],
-                        )
-                      : null,
-                  border: selected
-                      ? Border.all(
-                          color: const Color(0xFF0E1330), width: 5)
-                      : null,
-                  boxShadow: selected
-                      ? [
-                          BoxShadow(
-                            color: const Color(0xFF4F46FF)
-                                .withValues(alpha: .32),
-                            blurRadius: 16,
-                            offset: const Offset(0, 7),
-                          )
-                        ]
-                      : null,
-                ),
-                child: Icon(
-                  item.icon,
-                  size: 23,
-                  color: selected ? Colors.white : muted,
-                ),
-              ),
-              ),
-              const SizedBox(height: 2),
-              AnimatedDefaultTextStyle(
-                duration: const Duration(milliseconds: 250),
-                style: TextStyle(
-                  fontFamily: AppTheme.fontFamily,
-                  fontSize: 10.5,
-                  height: 1.2,
-                  fontWeight:
-                      selected ? FontWeight.w700 : FontWeight.w400,
-                  color: selected ? Colors.white : muted,
-                ),
-                child: Text(item.title, maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
-              ),
-              const SizedBox(height: 7),
-            ],
-          ),
-        ),
       ),
     );
   }

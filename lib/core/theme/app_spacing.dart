@@ -14,10 +14,13 @@ abstract final class AppSpacing {
   static const double maxContentWidth = 1440;
 }
 
+/// أنصاف الأقطار حسب دليل YAD: بطاقات 22، حقول/أزرار 18،
+/// أيقونات مربعة 14-16، شارات وفلاتر دائرية بالكامل.
 abstract final class AppRadius {
-  static const double xs = 4;
-  static const double sm = 8;
-  static const double md = 12;
-  static const double lg = 20;
+  static const double xs = 6;
+  static const double sm = 12;
+  static const double md = 18;
+  static const double lg = 22;
+  static const double xl = 28;
   static const double pill = 999;
 }

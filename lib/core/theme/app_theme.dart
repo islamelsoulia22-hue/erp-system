@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'app_colors.dart';
+import 'app_spacing.dart';
 
 /// Centralized ERP theme. All color comes from [AppColors].
 /// Typography uses bundled Cairo with RTL-friendly defaults.
@@ -60,18 +61,18 @@ abstract final class AppTheme {
         );
 
     final textTheme = TextTheme(
-      displayLarge: style(size: 32, weight: FontWeight.w700, height: 1.3),
-      displayMedium: style(size: 28, weight: FontWeight.w700, height: 1.3),
-      headlineLarge: style(size: 24, weight: FontWeight.w700, height: 1.4),
-      headlineMedium: style(size: 20, weight: FontWeight.w700, height: 1.4),
-      headlineSmall: style(size: 18, weight: FontWeight.w700, height: 1.4),
-      titleLarge: style(size: 16, weight: FontWeight.w700),
-      titleMedium: style(size: 15, weight: FontWeight.w600),
-      titleSmall: style(size: 14, weight: FontWeight.w600),
-      bodyLarge: style(size: 14, weight: FontWeight.w400),
-      bodyMedium: style(size: 13, weight: FontWeight.w400),
+      displayLarge: style(size: 50, weight: FontWeight.w800, height: 1.1),
+      displayMedium: style(size: 32, weight: FontWeight.w800, height: 1.2),
+      headlineLarge: style(size: 26, weight: FontWeight.w800, height: 1.3),
+      headlineMedium: style(size: 20, weight: FontWeight.w800, height: 1.4),
+      headlineSmall: style(size: 18, weight: FontWeight.w800, height: 1.4),
+      titleLarge: style(size: 16, weight: FontWeight.w800),
+      titleMedium: style(size: 15, weight: FontWeight.w800),
+      titleSmall: style(size: 14, weight: FontWeight.w700),
+      bodyLarge: style(size: 14, weight: FontWeight.w600),
+      bodyMedium: style(size: 13, weight: FontWeight.w600),
       bodySmall: style(size: 12, weight: FontWeight.w400, color: secondary),
-      labelLarge: style(size: 13, weight: FontWeight.w600),
+      labelLarge: style(size: 13, weight: FontWeight.w700),
       labelMedium: style(size: 12, weight: FontWeight.w600),
       labelSmall:
           style(size: 11, weight: FontWeight.w600, color: secondary),
@@ -85,21 +86,23 @@ abstract final class AppTheme {
           isDark ? AppColors.darkBackground : AppColors.background,
       textTheme: textTheme,
       appBarTheme: AppBarTheme(
-        backgroundColor: scheme.surface,
+        backgroundColor:
+            isDark ? AppColors.darkBackground : AppColors.mist,
+        surfaceTintColor: Colors.transparent,
         foregroundColor: textColor,
         elevation: 0,
-        scrolledUnderElevation: 1,
-        centerTitle: false,      
-        toolbarHeight: 60,
+        scrolledUnderElevation: 0,
+        centerTitle: false,
+        titleSpacing: 4,
         titleTextStyle:
-            style(size: 17, weight: FontWeight.w700),
+            style(size: 22, weight: FontWeight.w800),
       ),
       cardTheme: CardThemeData(
         color: scheme.surface,
         elevation: 0,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(AppRadius.lg),
           side: BorderSide(
               color: isDark
                   ? AppColors.darkDivider
@@ -119,25 +122,25 @@ abstract final class AppTheme {
         filled: true,
         fillColor: isDark
             ? AppColors.darkBackground
-            : const Color(0xFFF8FAFC),
+            : AppColors.surface,
         contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(AppRadius.md),
           borderSide: BorderSide(
               color: isDark
                   ? AppColors.darkDivider
                   : AppColors.border),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(AppRadius.md),
           borderSide: BorderSide(
               color: isDark
                   ? AppColors.darkDivider
                   : AppColors.border),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(AppRadius.md),
           borderSide:
               const BorderSide(color: AppColors.primary, width: 1.5),
         ),
@@ -152,24 +155,32 @@ abstract final class AppTheme {
           foregroundColor: Colors.white,
           textStyle: style(
               size: 13, weight: FontWeight.w700, color: Colors.white),
+          minimumSize: const Size(0, 50),
           padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
           shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16)),
+              borderRadius: BorderRadius.circular(AppRadius.md)),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
           textStyle: style(size: 13, weight: FontWeight.w600),
+          minimumSize: const Size(0, 50),
+          side: BorderSide(
+              color: isDark
+                  ? AppColors.darkDivider
+                  : const Color(0xFFD6DAEA),
+              width: 1.5),
           padding:
-              const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
           shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16)),
+              borderRadius: BorderRadius.circular(AppRadius.md)),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
-          textStyle: style(size: 13, weight: FontWeight.w600),
+          textStyle: style(size: 13, weight: FontWeight.w700),
+          foregroundColor: isDark ? AppColors.darkPrimary : AppColors.indigoDeep,
           padding:
               const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         ),
@@ -178,7 +189,8 @@ abstract final class AppTheme {
           ? null
           : ChipThemeData(
               backgroundColor: AppColors.neutralContainer,
-              labelStyle: style(size: 11.5, weight: FontWeight.w600),
+              side: BorderSide.none,
+              labelStyle: style(size: 11.5, weight: FontWeight.w700),
               padding: const EdgeInsets.symmetric(horizontal: 8),
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(999)),
@@ -217,14 +229,31 @@ abstract final class AppTheme {
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: scheme.surface,
         indicatorColor: AppColors.primaryContainer,
+        surfaceTintColor: Colors.transparent,
         labelTextStyle: WidgetStatePropertyAll(
             style(size: 11, weight: FontWeight.w600)),
       ),
       drawerTheme: DrawerThemeData(backgroundColor: scheme.surface),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.ink,
+        contentTextStyle:
+            style(size: 13, weight: FontWeight.w600, color: Colors.white),
         shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16)),
+            borderRadius: BorderRadius.circular(AppRadius.md)),
+      ),
+      bottomSheetTheme: BottomSheetThemeData(
+        backgroundColor: scheme.surface,
+        surfaceTintColor: Colors.transparent,
+        shape: const RoundedRectangleBorder(
+            borderRadius:
+                BorderRadius.vertical(top: Radius.circular(AppRadius.xl))),
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: scheme.surface,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.xl)),
       ),
     );
   }

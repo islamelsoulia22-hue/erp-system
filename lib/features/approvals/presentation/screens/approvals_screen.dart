@@ -12,6 +12,7 @@ import '../../../../core/widgets/app_card.dart';
 import '../../../../core/widgets/app_pagination.dart';
 import '../../../../core/widgets/app_states.dart';
 import '../../../../core/widgets/status_badge.dart';
+import '../../../../core/widgets/yad_widgets.dart';
 import '../../../auth/presentation/providers/auth_providers.dart';
 import '../../../dashboard/presentation/providers/dashboard_providers.dart';
 import '../../../expenses/data/expenses_repository.dart';
@@ -70,19 +71,49 @@ class _ApprovalsScreenState
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Material(
-          color: Theme.of(context).colorScheme.surface,
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
           child: TabBar(
             controller: _tabs,
             isScrollable: true,
             tabAlignment: TabAlignment.start,
-            tabs: const [
-              Tab(text: 'الكل'),
-              Tab(text: 'مبيعات'),
-              Tab(text: 'مشتريات'),
-              Tab(text: 'توريد'),
-              Tab(text: 'مخصص'),
-              Tab(text: 'مصروفات'),
+            dividerColor: Colors.transparent,
+            splashFactory: NoSplash.splashFactory,
+            overlayColor:
+                const WidgetStatePropertyAll(Colors.transparent),
+            indicatorSize: TabBarIndicatorSize.tab,
+            indicatorPadding: const EdgeInsets.symmetric(vertical: 2),
+            indicator: BoxDecoration(
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? AppColors.indigo
+                  : AppColors.ink,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            labelColor: Colors.white,
+            unselectedLabelColor:
+                Theme.of(context).colorScheme.onSurface,
+            labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+            tabs: [
+              for (final t in const [
+                'الكل',
+                'مبيعات',
+                'مشتريات',
+                'توريد',
+                'مخصص',
+                'مصروفات',
+              ])
+                Tab(
+                  height: 40,
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14),
+                    child: Text(t,
+                        style: const TextStyle(
+                            fontFamily: 'Cairo',
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700)),
+                  ),
+                ),
             ],
           ),
         ),
@@ -131,9 +162,8 @@ class _ApprovalListState
             ? docs
             : docs.where((d) => d.type == filter).toList();
         if (rows.isEmpty) {
-          return const EmptyState(
-            icon: Icons.fact_check_outlined,
-            title: 'لا توجد موافقات معلقة',
+          return _AllApprovedState(
+            onHistory: () => context.push('/notifications'),
           );
         }
         final items = paginateLocal(rows, _page);
@@ -413,4 +443,242 @@ class _ApprovalCardState
       ),
     );
   }
+}
+
+
+/// حالة "كل شيء معتمد": مستند عائم بحلقات نابضة وعلامة صح ترسم نفسها.
+class _AllApprovedState extends StatefulWidget {
+  final VoidCallback onHistory;
+  const _AllApprovedState({required this.onHistory});
+
+  @override
+  State<_AllApprovedState> createState() => _AllApprovedStateState();
+}
+
+class _AllApprovedStateState extends State<_AllApprovedState>
+    with TickerProviderStateMixin {
+  late final AnimationController _loop = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 4500));
+  late final AnimationController _ring = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 2800));
+  late final AnimationController _tick = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 900));
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.maybeDisableAnimationsOf(context) == true) {
+      _loop.stop();
+      _ring.stop();
+      _tick.value = 1;
+    } else {
+      if (!_loop.isAnimating) _loop.repeat(reverse: true);
+      if (!_ring.isAnimating) _ring.repeat();
+      if (!_tick.isAnimating && _tick.value == 0) {
+        Future.delayed(const Duration(milliseconds: 600), () {
+          if (mounted) _tick.forward();
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _loop.dispose();
+    _ring.dispose();
+    _tick.dispose();
+    super.dispose();
+  }
+
+  Widget _ringWidget(Color c, double phase) {
+    return AnimatedBuilder(
+      animation: _ring,
+      builder: (context, _) {
+        final t = (_ring.value + phase) % 1.0;
+        return Opacity(
+          opacity: (0.7 * (1 - t)).clamp(0.0, 1.0),
+          child: Transform.scale(
+            scale: .8 + .55 * t,
+            child: Container(
+              width: 150,
+              height: 150,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: c, width: 2),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 34, 20, 24),
+      children: [
+        Center(
+          child: SizedBox(
+            width: 200,
+            height: 200,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                _ringWidget(AppColors.indigo, 0),
+                _ringWidget(AppColors.mint, .5),
+                Container(
+                  width: 168,
+                  height: 168,
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: RadialGradient(
+                      colors: [Color(0xFFE3E1FF), Color(0x00F3F5FB)],
+                      stops: [0, .7],
+                    ),
+                  ),
+                ),
+                AnimatedBuilder(
+                  animation: _loop,
+                  builder: (context, child) {
+                    final v = Curves.easeInOut.transform(_loop.value);
+                    return Transform.translate(
+                      offset: Offset(0, -12 * v),
+                      child: Transform.rotate(
+                          angle: (-3 + 5 * v) * 3.14159 / 180,
+                          child: child),
+                    );
+                  },
+                  child: SizedBox(
+                    width: 112,
+                    height: 136,
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Container(
+                          width: 96,
+                          height: 120,
+                          padding: const EdgeInsets.fromLTRB(14, 18, 14, 0),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surface,
+                            borderRadius: BorderRadius.circular(22),
+                            border: Border.all(color: AppColors.border),
+                            boxShadow: [
+                              BoxShadow(
+                                color: AppColors.indigo
+                                    .withValues(alpha: .25),
+                                blurRadius: 40,
+                                offset: const Offset(0, 22),
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              for (final w in const [1.0, .7, .84]) ...[
+                                FractionallySizedBox(
+                                  widthFactor: w,
+                                  child: Container(
+                                    height: 7,
+                                    decoration: BoxDecoration(
+                                      color: AppColors.border,
+                                      borderRadius:
+                                          BorderRadius.circular(99),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 9),
+                              ],
+                            ],
+                          ),
+                        ),
+                        PositionedDirectional(
+                          bottom: 0,
+                          start: 0,
+                          child: Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              gradient: const LinearGradient(
+                                  colors: [AppColors.mint, AppColors.sky]),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: AppColors.mint
+                                      .withValues(alpha: .45),
+                                  blurRadius: 18,
+                                  offset: const Offset(0, 10),
+                                ),
+                              ],
+                            ),
+                            child: AnimatedBuilder(
+                              animation: _tick,
+                              builder: (context, _) => CustomPaint(
+                                painter: _TickPainter(_tick.value),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 18),
+        Text('كل شيء معتمد',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.headlineMedium?.copyWith(fontSize: 24)),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Text(
+            'لا توجد موافقات معلّقة الآن. سنُنبّهك فور وصول مستند جديد يحتاج اعتمادك.',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyLarge?.copyWith(
+                color: AppColors.secondaryText, height: 1.7),
+          ),
+        ),
+        const SizedBox(height: 22),
+        Center(
+          child: GradientButton(
+            label: 'عرض الإشعارات',
+            onPressed: widget.onHistory,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TickPainter extends CustomPainter {
+  final double t;
+  _TickPainter(this.t);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // مسار علامة الصح (من تصميم YAD: m6 12.5 4 4 8-8 على شبكة 24).
+    const k = 1.0;
+    final c = Offset((size.width - 24 * k) / 2, (size.height - 24 * k) / 2);
+    Offset p(double x, double y) => Offset(c.dx + x * k, c.dy + y * k);
+    final path = Path()
+      ..moveTo(p(6, 12.5).dx, p(6, 12.5).dy)
+      ..lineTo(p(10, 16.5).dx, p(10, 16.5).dy)
+      ..lineTo(p(18, 8.5).dx, p(18, 8.5).dy);
+    final paint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    for (final m in path.computeMetrics()) {
+      canvas.drawPath(m.extractPath(0, m.length * t), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TickPainter old) => old.t != t;
 }

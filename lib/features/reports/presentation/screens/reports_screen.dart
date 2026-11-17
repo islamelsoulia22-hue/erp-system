@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart' hide TextDirection;
+import '../../../../core/widgets/yad_widgets.dart';
 
 import '../../../../core/errors/failures.dart';
 import '../../../../core/pdf/report_pdf.dart';
@@ -100,17 +101,33 @@ class ReportsScreen extends ConsumerWidget {
       length: 5,
       child: Column(
         children: [
-          Material(
-            color: Theme.of(context).colorScheme.surface,
-            child: const TabBar(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: TabBar(
               isScrollable: true,
               tabAlignment: TabAlignment.start,
-              tabs: [
-                Tab(text: 'مالية'),
-                Tab(text: 'الأرباح'),
-                Tab(text: 'عميل'),
-                Tab(text: 'مورد'),
-                Tab(text: 'عام'),
+              dividerColor: Colors.transparent,
+              splashFactory: NoSplash.splashFactory,
+              overlayColor:
+                  const WidgetStatePropertyAll(Colors.transparent),
+              indicatorSize: TabBarIndicatorSize.tab,
+              indicatorPadding: const EdgeInsets.symmetric(vertical: 2),
+              indicator: BoxDecoration(
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? AppColors.indigo
+                    : AppColors.ink,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              labelColor: Colors.white,
+              unselectedLabelColor:
+                  Theme.of(context).colorScheme.onSurface,
+              labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+              tabs: const [
+                _PillTab('مالية'),
+                _PillTab('الأرباح'),
+                _PillTab('عميل'),
+                _PillTab('مورد'),
+                _PillTab('عام'),
               ],
             ),
           ),
@@ -129,6 +146,24 @@ class ReportsScreen extends ConsumerWidget {
       ),
     );
   }
+}
+
+class _PillTab extends StatelessWidget {
+  final String text;
+  const _PillTab(this.text);
+
+  @override
+  Widget build(BuildContext context) => Tab(
+        height: 40,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: Text(text,
+              style: const TextStyle(
+                  fontFamily: 'Cairo',
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700)),
+        ),
+      );
 }
 
 // ---------- مشترك: اختيار الفترة ----------
@@ -169,54 +204,119 @@ class _PeriodBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AppCard(
-      child: Column(
-        children: [
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (final p in periods)
-                ChoiceChip(
-                  label: Text(_periodName(p)),
-                  selected: period == p,
-                  visualDensity: VisualDensity.compact,
-                  onSelected: (_) => onPeriod(p),
-                ),
-            ],
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    Widget navBtn(IconData icon, String tip, VoidCallback onTap) =>
+        TapScale(
+          onTap: onTap,
+          semanticLabel: tip,
+          child: Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: dark ? AppColors.darkBackground : AppColors.mist,
+              borderRadius: BorderRadius.circular(13),
+            ),
+            child: Icon(icon, size: 18, color: theme.colorScheme.onSurface),
           ),
-          const SizedBox(height: AppSpacing.sm),
-          Row(
-            children: [
-              IconButton(
-                tooltip: 'السابق',
-                icon: const Icon(Icons.chevron_right_outlined),
-                onPressed: () =>
-                    onAnchor(shiftAnchor(period, anchor, -1)),
+        );
+    final seg = Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: dark ? AppColors.darkSurface : const Color(0xFFE8EBF6),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (final p in periods)
+              TapScale(
+                onTap: () => onPeriod(p),
+                semanticLabel: _periodName(p),
+                child: AnimatedContainer(
+                  duration: yadDuration(context, 250),
+                  constraints: const BoxConstraints(minWidth: 64),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 9),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: period == p
+                        ? (dark ? AppColors.indigo : Colors.white)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: period == p && !dark
+                        ? [
+                            BoxShadow(
+                              color: const Color(0xFF283278)
+                                  .withValues(alpha: .14),
+                              blurRadius: 8,
+                              offset: const Offset(0, 3),
+                            ),
+                          ]
+                        : null,
+                  ),
+                  child: Text(
+                    _periodName(p),
+                    style: TextStyle(
+                      fontFamily: 'Cairo',
+                      fontSize: 13,
+                      fontWeight: period == p
+                          ? FontWeight.w800
+                          : FontWeight.w600,
+                      color: period == p && dark
+                          ? Colors.white
+                          : (period == p
+                              ? AppColors.ink
+                              : AppColors.secondaryText),
+                    ),
+                  ),
+                ),
               ),
+          ],
+        ),
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        seg,
+        const SizedBox(height: 10),
+        Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+                color: dark ? AppColors.darkDivider : AppColors.border),
+          ),
+          child: Row(
+            children: [
+              navBtn(Icons.chevron_right_outlined, 'السابق',
+                  () => onAnchor(shiftAnchor(period, anchor, -1))),
               Expanded(
-                child: OutlinedButton(
-                  onPressed: () => _pickDate(context),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => _pickDate(context),
                   child: Text(label,
+                      textAlign: TextAlign.center,
                       textDirection: TextDirection.ltr,
                       maxLines: 1,
-                      overflow: TextOverflow.ellipsis),
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleMedium),
                 ),
               ),
-              IconButton(
-                tooltip: 'التالي',
-                icon: const Icon(Icons.chevron_left_outlined),
-                onPressed: () =>
-                    onAnchor(shiftAnchor(period, anchor, 1)),
-              ),
+              navBtn(Icons.chevron_left_outlined, 'التالي',
+                  () => onAnchor(shiftAnchor(period, anchor, 1))),
+              const SizedBox(width: 4),
               TextButton(
                 onPressed: () => onAnchor(DateTime.now()),
                 child: const Text('اليوم'),
               ),
             ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -234,18 +334,33 @@ class _SumCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       child: AppCard(
-        padding: const EdgeInsets.all(AppSpacing.md),
+        padding: const EdgeInsets.all(12),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.circle, size: 10, color: color),
-            const SizedBox(height: 4),
+            Container(
+              width: 9,
+              height: 9,
+              decoration:
+                  BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(height: 8),
             Text(label,
-                style: Theme.of(context).textTheme.bodySmall,
-                textAlign: TextAlign.center),
-            Text(AppFormat.money(value),
                 style: Theme.of(context)
                     .textTheme
-                    .titleSmall),
+                    .bodySmall
+                    ?.copyWith(fontSize: 11),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: AlignmentDirectional.centerStart,
+              child: Text(AppFormat.money(value, suffix: ''),
+                  style: Theme.of(context)
+                      .textTheme
+                      .headlineMedium
+                      ?.copyWith(fontSize: 17)),
+            ),
           ],
         ),
       ),
@@ -635,27 +750,28 @@ class _FinanceTabState
           else if (_error != null)
             ErrorState(message: _error!)
           else ...[
+            _CashHero(
+                paidIn: _data!.paidIn, paidOut: _data!.paidOut),
+            const SizedBox(height: 12),
             Row(
               children: [
                 _SumCard(
                     label: 'مبيعات (صافي)',
                     value: _sum(_data!.sales) -
                         _data!.returnsTotal,
-                    color: AppColors.success),
-                const SizedBox(
-                    width: AppSpacing.sm),
+                    color: AppColors.mint),
+                const SizedBox(width: 10),
                 _SumCard(
                     label: 'مشتريات',
                     value: _sum(_data!.purch),
-                    color: AppColors.info),
-                const SizedBox(
-                    width: AppSpacing.sm),
+                    color: AppColors.sky),
+                const SizedBox(width: 10),
                 _SumCard(
-                    label: 'الصافي',
-                    value: _sum(_data!.sales) -
-                        _data!.returnsTotal -
-                        _sum(_data!.purch),
-                    color: AppColors.primary),
+                    label: 'فواتير',
+                    value: (_data!.sales.length +
+                            _data!.purch.length)
+                        .toDouble(),
+                    color: AppColors.amber),
               ],
             ),
             if (_data!.returnsTotal > 0)
@@ -670,29 +786,6 @@ class _FinanceTabState
                   textAlign: TextAlign.center,
                 ),
               ),
-            const SizedBox(height: AppSpacing.sm),
-            Row(
-              children: [
-                _SumCard(
-                    label: 'محصل',
-                    value: _data!.paidIn,
-                    color: Colors.teal),
-                const SizedBox(
-                    width: AppSpacing.sm),
-                _SumCard(
-                    label: 'مدفوع للموردين',
-                    value: _data!.paidOut,
-                    color: Colors.orange),
-                const SizedBox(
-                    width: AppSpacing.sm),
-                _SumCard(
-                    label: 'فواتير',
-                    value: (_data!.sales.length +
-                            _data!.purch.length)
-                        .toDouble(),
-                    color: Colors.grey),
-              ],
-            ),
             const SizedBox(height: AppSpacing.md),
             _PdfButtons(
               onPreview: () =>
@@ -1911,6 +2004,86 @@ class _GeneralTab extends ConsumerWidget {
                   fontSize: 20,
                   fontWeight: FontWeight.bold)),
         ]),
+      ),
+    );
+  }
+}
+
+
+/// هيرو التدفق النقدي: المحصل − المدفوع للموردين.
+class _CashHero extends StatelessWidget {
+  final double paidIn;
+  final double paidOut;
+  const _CashHero({required this.paidIn, required this.paidOut});
+
+  @override
+  Widget build(BuildContext context) {
+    final net = paidIn - paidOut;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+          colors: [AppColors.midnight, AppColors.navy, AppColors.indigo],
+          stops: [0, .65, 1],
+        ),
+        borderRadius: BorderRadius.circular(26),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF2828A0).withValues(alpha: .28),
+            blurRadius: 30,
+            offset: const Offset(0, 16),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('صافي التدفق النقدي',
+              style: TextStyle(
+                  fontFamily: 'Cairo',
+                  fontSize: 12,
+                  color: AppColors.heroSoft)),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Flexible(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    AppFormat.money(net, suffix: ''),
+                    textDirection: TextDirection.ltr,
+                    style: TextStyle(
+                      fontFamily: 'Cairo',
+                      fontSize: 38,
+                      height: 1.25,
+                      fontWeight: FontWeight.w800,
+                      color: net < 0
+                          ? const Color(0xFFFF9AA5)
+                          : const Color(0xFF5BF0C8),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Text('ج.م',
+                  style: TextStyle(
+                      fontFamily: 'Cairo',
+                      fontSize: 14,
+                      color: AppColors.heroSoft)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'محصل ${AppFormat.money(paidIn, suffix: '')} · مدفوع للموردين ${AppFormat.money(paidOut, suffix: '')}',
+            style: const TextStyle(
+                fontFamily: 'Cairo',
+                fontSize: 12,
+                color: AppColors.heroSoft),
+          ),
+        ],
       ),
     );
   }

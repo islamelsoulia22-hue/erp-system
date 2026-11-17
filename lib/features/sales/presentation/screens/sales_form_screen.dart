@@ -9,6 +9,7 @@ import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_spacing.dart';
 import '../../../../core/utils/format.dart';
 import '../../../../core/widgets/app_card.dart';
+import '../../../../core/widgets/yad_widgets.dart';
 import '../../../../core/widgets/app_states.dart';
 import '../../../customers/data/customers_repository.dart';
 import '../../../products/data/products_repository.dart';
@@ -1108,6 +1109,14 @@ class _SalesFormScreenState extends ConsumerState<SalesFormScreen> {
                 padding: EdgeInsets.all(
                     context.contentPadding),
                 children: [
+                  _FormSteps(done: [
+                    (_customerId != null ||
+                            _walkIn.text.trim().isNotEmpty) &&
+                        _warehouseId != null,
+                    _cart.isNotEmpty,
+                    _paymentId != null,
+                  ]),
+                  const SizedBox(height: AppSpacing.mdx),
                   sideSection,
                   const SizedBox(
                       height: AppSpacing.mdx),
@@ -1390,26 +1399,17 @@ class _SideSection extends StatelessWidget {
           ),
         ),
         const SizedBox(height: AppSpacing.md),
-        AppCard(
-          child: Column(
+        Column(
             crossAxisAlignment:
                 CrossAxisAlignment.stretch,
             children: [
-              const SectionHeader(title: 'الملخص'),
-              _SummaryRow(
-                  label: 'الإجمالي الفرعي',
-                  value: AppFormat.money(subtotal)),
-              _SummaryRow(
-                  label: 'الضريبة',
-                  value: hasTax
-                      ? AppFormat.money(taxTotal)
-                      : 'بدون ضريبة'),
-              const Divider(height: 16),
-              _SummaryRow(
-                  label: 'الإجمالي الكلي',
-                  value: AppFormat.money(grandTotal),
-                  bold: true),
-              const SizedBox(height: AppSpacing.sm),
+              _TotalHero(
+                subtotal: subtotal,
+                taxTotal: taxTotal,
+                grandTotal: grandTotal,
+                hasTax: hasTax,
+              ),
+              const SizedBox(height: AppSpacing.md),
               if (isLocal) ...[
                 FilledButton.icon(
                   onPressed: saving ? null : onSaveDirect,
@@ -1456,7 +1456,152 @@ class _SideSection extends StatelessWidget {
               ],
             ],
           ),
-        ),
+      ],
+    );
+  }
+}
+
+/// بطاقة الإجمالي الداكنة (إجمالي الأصناف + الضريبة + إجمالي الفاتورة).
+class _TotalHero extends StatelessWidget {
+  final double subtotal;
+  final double taxTotal;
+  final double grandTotal;
+  final bool hasTax;
+  const _TotalHero({
+    required this.subtotal,
+    required this.taxTotal,
+    required this.grandTotal,
+    required this.hasTax,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    Widget row(String l, String v) => Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(l,
+                  style: const TextStyle(
+                      fontFamily: 'Cairo',
+                      fontSize: 13,
+                      color: AppColors.heroSoft)),
+              Text(v,
+                  style: const TextStyle(
+                      fontFamily: 'Cairo',
+                      fontSize: 13,
+                      color: AppColors.heroSoft)),
+            ],
+          ),
+        );
+    return YadHeroCard(
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        children: [
+          row('إجمالي الأصناف', AppFormat.money(subtotal, suffix: '')),
+          row('الضريبة',
+              hasTax ? AppFormat.money(taxTotal, suffix: '') : 'بدون ضريبة'),
+          Container(
+            margin: const EdgeInsets.only(top: 12),
+            padding: const EdgeInsets.only(top: 12),
+            decoration: BoxDecoration(
+              border: Border(
+                  top: BorderSide(
+                      color: Colors.white.withValues(alpha: .18))),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('إجمالي الفاتورة',
+                    style: TextStyle(
+                        fontFamily: 'Cairo',
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white)),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Text(AppFormat.money(grandTotal, suffix: ''),
+                        style: const TextStyle(
+                            fontFamily: 'Cairo',
+                            fontSize: 30,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white)),
+                    const SizedBox(width: 4),
+                    const Text('ج.م',
+                        style: TextStyle(
+                            fontFamily: 'Cairo',
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.heroSoft)),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// مؤشر خطوات الفاتورة: 1 البيانات · 2 الأصناف · 3 الدفع.
+/// الشريط يمتلئ (900ms) كلما اكتملت الخطوة.
+class _FormSteps extends StatelessWidget {
+  final List<bool> done;
+  const _FormSteps({required this.done});
+
+  static const _labels = ['1. البيانات', '2. الأصناف', '3. الدفع'];
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        for (var i = 0; i < 3; i++) ...[
+          if (i > 0) const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: theme.brightness == Brightness.dark
+                        ? AppColors.darkDivider
+                        : AppColors.border,
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  alignment: AlignmentDirectional.centerStart,
+                  child: TweenAnimationBuilder<double>(
+                    tween: Tween(end: done[i] ? 1 : 0),
+                    duration: yadDuration(context, 900),
+                    curve: Curves.easeOutCubic,
+                    builder: (context, v, _) => FractionallySizedBox(
+                      widthFactor: v,
+                      child: Container(
+                        decoration: const BoxDecoration(
+                            gradient: AppColors.actionGradient),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(_labels[i],
+                    style: theme.textTheme.labelMedium?.copyWith(
+                        fontWeight:
+                            done[i] ? FontWeight.w700 : FontWeight.w600,
+                        color: done[i]
+                            ? AppColors.indigoDeep
+                            : AppColors.secondaryText)),
+              ],
+            ),
+          ),
+        ],
       ],
     );
   }

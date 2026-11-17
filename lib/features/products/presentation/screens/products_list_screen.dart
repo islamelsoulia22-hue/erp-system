@@ -12,6 +12,8 @@ import '../../../../core/widgets/app_pagination.dart';
 import '../../../../core/widgets/app_states.dart';
 import '../../../../core/widgets/responsive_table.dart';
 import '../../../../core/widgets/status_badge.dart';
+import '../../../../core/widgets/yad_widgets.dart';
+import '../../../../core/theme/app_colors.dart';
 import '../../../auth/presentation/providers/auth_providers.dart';
 import '../../data/products_repository.dart';
 import '../../domain/product.dart';
@@ -233,64 +235,56 @@ class _ProductsListScreenState
                     cardBuilder: (p) => AppCard(
                       onTap: () =>
                           context.push('/products/${p.id}'),
-                      padding: const EdgeInsets.all(
-                          AppSpacing.md),
-                      child: Row(
+                      child: Column(
                         children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment.start,
-                              children: [
-                                Text(p.name,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleSmall,
-                                    maxLines: 1,
-                                    overflow:
-                                        TextOverflow.ellipsis),
-                                const SizedBox(
-                                    height: AppSpacing.xs),
-                                Text(
-                                  '${p.sku} • ${p.categoryName ?? 'بدون فئة'}',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodySmall,
-                                  maxLines: 1,
-                                  overflow:
-                                      TextOverflow.ellipsis,
-                                  textDirection:
-                                      TextDirection.ltr,
-                                ),
-                                const SizedBox(
-                                    height: AppSpacing.xs),
-                                Text(
-                                  'شراء ${AppFormat.money(p.purchasePrice)} • بيع ${AppFormat.money(p.salePrice)}',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .labelMedium,
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(
-                              width: AppSpacing.sm),
-                          Column(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.end,
+                          Row(
                             children: [
-                              if (!p.isActive)
-                                AppStatus.badge(
-                                    'INACTIVE')
-                              else if (p.primaryBarcode !=
-                                  null)
-                                const Icon(
-                                    Icons
-                                        .barcode_reader,
-                                    size: 20),
-                              const Icon(
-                                  Icons.chevron_left_outlined,
-                                  size: 20),
+                              const YadIconTile(
+                                  icon: Icons.inventory_2_outlined,
+                                  size: 50,
+                                  radius: 17),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Text(p.name,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleLarge
+                                            ?.copyWith(fontSize: 17),
+                                        maxLines: 1,
+                                        overflow:
+                                            TextOverflow.ellipsis),
+                                    Text(
+                                      '${p.sku} • ${p.categoryName ?? 'بدون فئة'}',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall,
+                                      maxLines: 1,
+                                      overflow:
+                                          TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              AppStatus.badge(
+                                  p.isActive ? 'ACTIVE' : 'INACTIVE'),
+                            ],
+                          ),
+                          const SizedBox(height: 14),
+                          Row(
+                            children: [
+                              Expanded(
+                                  child: _PriceTile(
+                                      label: 'سعر الشراء',
+                                      value: p.purchasePrice)),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                  child: _PriceTile(
+                                      label: 'سعر البيع',
+                                      value: p.salePrice)),
                             ],
                           ),
                         ],
@@ -368,11 +362,19 @@ class _Toolbar extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: AppSpacing.sm),
-              IconButton.filledTonal(
-                tooltip: 'مسح Barcode',
-                icon: const Icon(
-                    Icons.barcode_reader),
-                onPressed: onScan,
+              TapScale(
+                onTap: onScan,
+                semanticLabel: 'مسح Barcode',
+                child: Container(
+                  width: 50,
+                  height: 50,
+                  decoration: BoxDecoration(
+                    color: AppColors.ink,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: const Icon(Icons.qr_code_scanner_outlined,
+                      color: Colors.white, size: 22),
+                ),
               ),
             ],
           ),
@@ -381,49 +383,27 @@ class _Toolbar extends StatelessWidget {
               showSuppliers ||
               showCategories) ...[
             const SizedBox(height: AppSpacing.sm),
-            Wrap(
-              spacing: AppSpacing.sm,
-              runSpacing: AppSpacing.sm,
-              children: [
-                if (canCreate)
-                  FilledButton.icon(
-                    onPressed: onAdd,
-                    icon: const Icon(Icons.add_outlined,
-                        size: 18),
-                    label: const Text('+ إضافة صنف'),
-                  ),
-                if (showPrices)
-                  OutlinedButton.icon(
-                    onPressed: onPrices,
-                    icon: const Icon(
-                        Icons.price_change_outlined,
-                        size: 18),
-                    label: const Text('أسعار الشراء'),
-                  ),
-                if (showSuppliers)
-                  OutlinedButton.icon(
-                    onPressed: onSuppliers,
-                    icon: const Icon(
-                        Icons.handshake_outlined,
-                        size: 18),
-                    label: const Text('مورد الأصناف'),
-                  ),
-                if (showCategories)
-                  OutlinedButton.icon(
-                    onPressed: onCategories,
-                    icon: const Icon(
-                        Icons.category_outlined,
-                        size: 18),
-                    label: const Text('الفئات'),
-                  ),
-                OutlinedButton.icon(
-                  onPressed: onBarcodes,
-                  icon: const Icon(
-                      Icons.barcode_reader,
-                      size: 18),
-                  label: const Text('باركود الأصناف'),
-                ),
-              ],
+            SizedBox(
+              height: 40,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  if (canCreate)
+                    _ActionPill(
+                        label: '+ إضافة صنف',
+                        onTap: onAdd,
+                        primary: true),
+                  if (showCategories)
+                    _ActionPill(label: 'الفئات', onTap: onCategories),
+                  if (showSuppliers)
+                    _ActionPill(
+                        label: 'مورد الأصناف', onTap: onSuppliers),
+                  if (showPrices)
+                    _ActionPill(label: 'أسعار الشراء', onTap: onPrices),
+                  _ActionPill(
+                      label: 'باركود الأصناف', onTap: onBarcodes),
+                ],
+              ),
             ),
           ],
           const SizedBox(height: AppSpacing.sm),
@@ -458,6 +438,87 @@ class _Toolbar extends StatelessWidget {
                 selected: activeOnly,
                 onSelected: onActive,
               ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+class _ActionPill extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  final bool primary;
+  const _ActionPill(
+      {required this.label, required this.onTap, this.primary = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsetsDirectional.only(end: 8),
+      child: TapScale(
+        onTap: onTap,
+        semanticLabel: label,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            gradient: primary ? AppColors.actionGradient : null,
+            color: primary ? null : theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(999),
+            border: primary
+                ? null
+                : Border.all(color: AppColors.border),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  fontFamily: 'Cairo',
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: primary
+                      ? Colors.white
+                      : theme.colorScheme.onSurface)),
+        ),
+      ),
+    );
+  }
+}
+
+class _PriceTile extends StatelessWidget {
+  final String label;
+  final double value;
+  const _PriceTile({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: dark ? AppColors.darkBackground : AppColors.mist,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: theme.textTheme.bodySmall),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Flexible(
+                child: Text(AppFormat.money(value, suffix: ''),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.headlineMedium
+                        ?.copyWith(fontSize: 19)),
+              ),
+              const SizedBox(width: 4),
+              Text('ج.م', style: theme.textTheme.labelSmall),
             ],
           ),
         ],

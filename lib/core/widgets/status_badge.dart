@@ -20,7 +20,7 @@ class StatusBadge extends StatelessWidget {
       'PENDING_APPROVAL' || 'PENDING' || 'PARTIALLY_RECEIVED' ||
       'PREPARING' || 'UNPAID' =>
         const StatusBadge(label: '', tone: StatusTone.pending),
-      'APPROVED' || 'RECEIVED' || 'DELIVERED' || 'COMPLETED' ||
+      'APPROVED' || 'RECEIVED' || 'DELIVERED' || 'COMPLETED' || 'ACTIVE' ||
       'READY' || 'PAID' =>
         const StatusBadge(label: '', tone: StatusTone.approved),
       'REJECTED' =>
@@ -69,27 +69,27 @@ class StatusBadge extends StatelessWidget {
     }
     return switch (tone) {
       StatusTone.pending => (
-          const Color(0xFFB45309),
+          AppColors.warning,
           AppColors.warningContainer
         ),
       StatusTone.approved => (
-          const Color(0xFF15803D),
+          AppColors.success,
           AppColors.successContainer
         ),
       StatusTone.rejected => (
-          const Color(0xFFB91C1C),
+          AppColors.danger,
           AppColors.dangerContainer
         ),
       StatusTone.processing => (
-          const Color(0xFF075985),
-          AppColors.infoContainer
+          AppColors.indigoDeep,
+          AppColors.primaryContainer
         ),
       StatusTone.accent => (
-          const Color(0xFF6D28D9),
+          AppColors.purple,
           AppColors.purpleContainer
         ),
       StatusTone.neutral => (
-          const Color(0xFF475569),
+          AppColors.neutral,
           AppColors.neutralContainer
         ),
     };
@@ -102,7 +102,7 @@ class StatusBadge extends StatelessWidget {
     final text = label.isEmpty ? AppStatus.labelOf('') : label;
     return Container(
       padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.sm, vertical: 2),
+          horizontal: 12, vertical: 3),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(AppRadius.pill),

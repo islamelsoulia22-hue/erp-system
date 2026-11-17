@@ -9,6 +9,7 @@ import '../../../../core/widgets/app_pagination.dart';
 import '../../../../core/widgets/app_states.dart';
 import '../../../../core/widgets/responsive_table.dart';
 import '../../../../core/widgets/status_badge.dart';
+import '../../../../core/widgets/yad_widgets.dart';
 import '../../domain/warehouse.dart';
 import '../providers/warehouses_providers.dart';
 
@@ -135,6 +136,11 @@ class _InventoryOverviewScreenState
                 }
                 final out =
                     rows.where((s) => s.available <= 0);
+                final maxAvail = rows.fold<double>(
+                    1,
+                    (m, s) => s.available.toDouble() > m
+                        ? s.available.toDouble()
+                        : m);
                 return Column(
                   crossAxisAlignment:
                       CrossAxisAlignment.stretch,
@@ -142,22 +148,21 @@ class _InventoryOverviewScreenState
                     Row(
                       children: [
                         Expanded(
-                            child: _MiniStat(
-                                label: 'بنود',
-                                value: '${rows.length}',
-                                icon: Icons
-                                    .inventory_2_outlined,
-                                color: AppColors
-                                    .primary)),
-                        const SizedBox(
-                            width: AppSpacing.sm),
+                          child: _StatTile(
+                            label: 'عدد البنود',
+                            value: '${rows.length}',
+                            dark: true,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
                         Expanded(
-                            child: _MiniStat(
-                                label: 'نافد',
-                                value: '${out.length}',
-                                icon: Icons
-                                    .warning_amber_outlined,
-                                color: AppColors.danger)),
+                          child: _StatTile(
+                            label: 'نافد',
+                            value: '${out.length}',
+                            badge: out.isEmpty ? 'ممتاز' : 'يحتاج توريد',
+                            badgeOk: out.isEmpty,
+                          ),
+                        ),
                       ],
                     ),
                     const SizedBox(
@@ -183,54 +188,68 @@ class _InventoryOverviewScreenState
                       ],
                       rows: paginateLocal(rows, _page),
                       cardBuilder: (s) => AppCard(
-                        padding:
-                            const EdgeInsets.all(
-                                AppSpacing.md),
-                        child: Row(
+                        child: Column(
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start,
                           children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment
-                                        .start,
-                                children: [
-                                  Text(s.productName,
-                                      style:
-                                          Theme.of(context)
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(s.productName,
+                                          style: Theme.of(context)
                                               .textTheme
-                                              .titleSmall,
-                                      maxLines: 1,
-                                      overflow:
-                                          TextOverflow
-                                              .ellipsis),
-                                  Text(
-                                    '${s.warehouseName} • ${s.productSku}',
-                                    style: Theme.of(
-                                            context)
-                                        .textTheme
-                                        .bodySmall,
-                                    maxLines: 1,
-                                    overflow:
-                                        TextOverflow
-                                            .ellipsis,
+                                              .titleMedium,
+                                          maxLines: 1,
+                                          overflow:
+                                              TextOverflow.ellipsis),
+                                      Text(
+                                        '${s.productSku} • ${s.warehouseName}',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall,
+                                        maxLines: 1,
+                                        overflow:
+                                            TextOverflow.ellipsis,
+                                      ),
+                                    ],
                                   ),
-                                  Text(
-                                    'متاح ${s.available}',
-                                    style: Theme.of(
-                                            context)
-                                        .textTheme
-                                        .labelMedium,
-                                  ),
-                                ],
-                              ),
+                                ),
+                                StatusBadge(
+                                  label: s.available <= 0
+                                      ? 'نافد'
+                                      : 'متاح',
+                                  tone: s.available <= 0
+                                      ? StatusTone.rejected
+                                      : StatusTone.approved,
+                                ),
+                              ],
                             ),
-                            StatusBadge(
-                              label: s.available <= 0
-                                  ? 'نافد'
-                                  : 'متاح',
-                              tone: s.available <= 0
-                                  ? StatusTone.rejected
-                                  : StatusTone.approved,
+                            const SizedBox(height: 14),
+                            _StockBar(
+                              value: s.available.toDouble(),
+                              max: maxAvail,
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              mainAxisAlignment:
+                                  MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text('الكمية المتاحة',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodyMedium
+                                        ?.copyWith(
+                                            color: AppColors
+                                                .secondaryText)),
+                                Text('${s.available} وحدة',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleSmall),
+                              ],
                             ),
                           ],
                         ),
@@ -259,42 +278,97 @@ String _pAv(StockLine s) => '${s.available}';
 String _pState(StockLine s) =>
     s.available <= 0 ? 'نافد' : 'متاح';
 
-class _MiniStat extends StatelessWidget {
+/// بلاطة إحصاء: الداكنة (Midnight→Navy) أو البيضاء مع شارة حالة.
+class _StatTile extends StatelessWidget {
   final String label;
   final String value;
-  final IconData icon;
-  final Color color;
-  const _MiniStat({
+  final bool dark;
+  final String? badge;
+  final bool badgeOk;
+  const _StatTile({
     required this.label,
     required this.value,
-    required this.icon,
-    required this.color,
+    this.dark = false,
+    this.badge,
+    this.badgeOk = true,
   });
 
   @override
   Widget build(BuildContext context) {
-    return AppCard(
-      padding:
-          const EdgeInsets.all(AppSpacing.md),
-      child: Row(
-        children: [
-          Icon(icon, color: color, size: 22),
-          const SizedBox(width: AppSpacing.sm),
-          Column(
-            crossAxisAlignment:
-                CrossAxisAlignment.start,
-            children: [
-              Text(value,
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge),
-              Text(label,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall),
+    final theme = Theme.of(context);
+    final fg = dark ? Colors.white : theme.colorScheme.onSurface;
+    final inner = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: theme.textTheme.bodySmall?.copyWith(
+                color: dark
+                    ? AppColors.heroSoft
+                    : AppColors.secondaryText)),
+        Row(
+          children: [
+            Text(value,
+                style: theme.textTheme.displayMedium
+                    ?.copyWith(color: fg, fontSize: 34, height: 1.25)),
+            if (badge != null) ...[
+              const SizedBox(width: 8),
+              Flexible(
+                child: StatusBadge(
+                  label: badge!,
+                  tone: badgeOk
+                      ? StatusTone.approved
+                      : StatusTone.rejected,
+                ),
+              ),
             ],
+          ],
+        ),
+      ],
+    );
+    if (dark) {
+      return YadHeroCard(
+          padding: const EdgeInsets.all(16), child: inner);
+    }
+    return AppCard(padding: const EdgeInsets.all(16), child: inner);
+  }
+}
+
+/// شريط الكمية: يتحرك من الصفر للقيمة (1s) بتدرج Mint→Sky،
+/// والنافد بلون Coral. النسبة مقارنة بأعلى رصيد في القائمة.
+class _StockBar extends StatelessWidget {
+  final double value;
+  final double max;
+  const _StockBar({required this.value, required this.max});
+
+  @override
+  Widget build(BuildContext context) {
+    final ratio = max <= 0 ? 0.0 : (value / max).clamp(0.0, 1.0);
+    final out = value <= 0;
+    return Container(
+      height: 9,
+      decoration: BoxDecoration(
+        color: const Color(0xFFECEFF8),
+        borderRadius: BorderRadius.circular(99),
+      ),
+      clipBehavior: Clip.antiAlias,
+      alignment: AlignmentDirectional.centerStart,
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: out ? 1 : ratio),
+        duration: yadDuration(context, 1000),
+        curve: Curves.easeOutCubic,
+        builder: (context, v, _) => FractionallySizedBox(
+          widthFactor: v,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(99),
+              gradient: LinearGradient(
+                colors: out
+                    ? const [AppColors.coral, AppColors.coral]
+                    : const [AppColors.mint, AppColors.sky],
+              ),
+            ),
           ),
-        ],
+        ),
       ),
     );
   }

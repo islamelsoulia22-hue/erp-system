@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/backend/backend_mode.dart';
 import '../../features/dashboard/presentation/screens/app_shell.dart';
 import '../../features/dashboard/presentation/screens/dashboard_screen.dart';
+import '../../features/dashboard/presentation/screens/more_screen.dart';
 import '../../features/approvals/presentation/screens/approvals_screen.dart';
 import '../../features/auth/presentation/providers/auth_providers.dart';
 import '../../features/auth/presentation/screens/login_screen.dart';
@@ -96,6 +97,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/',
             builder: (context, state) => const DashboardScreen(),
+          ),
+          GoRoute(
+            path: '/more',
+            builder: (context, state) => const MoreScreen(),
           ),
           GoRoute(
             path: '/approvals',
